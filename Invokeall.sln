@@ -3,7 +3,7 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 15
 VisualStudioVersion = 15.0.28307.136
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InvokeallCsWait", "InvokeallCsWait.csproj", "{08FB4D44-1112-4AE7-BC7B-E9B1EB5C6606}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Invokeall", "Invokeall.csproj", "{08FB4D44-1112-4AE7-BC7B-E9B1EB5C6606}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
