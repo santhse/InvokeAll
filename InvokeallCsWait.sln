@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio 15
+VisualStudioVersion = 15.0.28307.136
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "InvokeallCsWait", "InvokeallCsWait.csproj", "{08FB4D44-1112-4AE7-BC7B-E9B1EB5C6606}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{08FB4D44-1112-4AE7-BC7B-E9B1EB5C6606}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{08FB4D44-1112-4AE7-BC7B-E9B1EB5C6606}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{08FB4D44-1112-4AE7-BC7B-E9B1EB5C6606}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{08FB4D44-1112-4AE7-BC7B-E9B1EB5C6606}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {DC7AE67E-146B-4F1F-9AC4-6A5EB23BB0AC}
+	EndGlobalSection
+EndGlobal
