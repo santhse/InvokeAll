@@ -69,7 +69,7 @@
         }
 
         internal static RunspacePool CreateRunspacePool(CommandInfo commandInfo, PSHost pSHost, int maxRunspaces, out List<string> debugStrings, 
-            PSSession useRemotePS, string[] modules = null, string[] modulesPath = null, string[] snapIns = null, IList<SessionStateVariableEntry> variableEntries = null)
+            PSSession useRemotePS, bool loadAllTypedata, string[] modules = null, string[] modulesPath = null, string[] snapIns = null, IList<SessionStateVariableEntry> variableEntries = null)
         {
             debugStrings = new List<string>();
             RunspaceConnectionInfo runspaceConnectionInfo = null;
@@ -114,20 +114,24 @@
                 
                 TypeTable typeTable = TypeTable.LoadDefaultTypeFiles();
                 
-                Collection<PSObject> typeDatas = ScriptBlock.Create("Get-TypeData").Invoke();
-                foreach (PSObject typeData in typeDatas)
+                if(loadAllTypedata == true)
                 {
-                    TypeData t = (TypeData)typeData.BaseObject;
-                    try
+                    Collection<PSObject> typeDatas = ScriptBlock.Create("Get-TypeData").Invoke();
+                    foreach (PSObject typeData in typeDatas)
                     {
-                        typeTable.AddType(t);
-                        debugStrings.Add(string.Format("Added typedata{0}", t.TypeName));
-                    }
-                    catch (Exception e)
-                    {
-                        debugStrings.Add(string.Format("Unable to add typeData {0}. Error {1}", t.TypeName, e.Message));
+                        TypeData t = (TypeData)typeData.BaseObject;
+                        try
+                        {
+                            typeTable.AddType(t);
+                            debugStrings.Add(string.Format("Added typedata{0}", t.TypeName));
+                        }
+                        catch (Exception e)
+                        {
+                            debugStrings.Add(string.Format("Unable to add typeData {0}. Error {1}", t.TypeName, e.Message));
+                        }
                     }
                 }
+
                 return RunspaceFactory.CreateRunspacePool(1, Environment.ProcessorCount, runspaceConnectionInfo, pSHost, typeTable);
             }
 

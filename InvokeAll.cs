@@ -15,14 +15,15 @@ namespace PSParallel
     /// Invoke-All is the cmdlet exported from the Module. 
     /// It is a wrapper like function which takes input from Pipeline and process the commands consequently using runspaces.
     /// </summary>
-    [Cmdlet("Invoke", "All", SupportsShouldProcess = true, DefaultParameterSetName = "Default")]
+    [Cmdlet("Invoke", "All", SupportsShouldProcess = true)]
     [OutputType(typeof(PSObject))]
 
     public partial class InvokeAll : PSCmdlet
     {
-        private const string DefaultParameterSetName = "Default";
+        private const string ModuleParameterSetName = "Default";
+        private const string RemotePSParameterSetName = "RemotePS";
 
-        [Parameter(Mandatory = true, Position = 0, ValueFromPipeline = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = true, Position = 0, ValueFromPipeline = false,
             HelpMessage = @"
 Scriptblock to execute in parallel.
 Usually it is the 2nd Pipeline block, wrap your command as shown in the below examples and it should work fine.
@@ -31,56 +32,59 @@ You cannot use alias or external scripts. If you are using a function from a cus
         [ValidateNotNullOrEmpty()]
         public ScriptBlock ScriptToRun { get; set; }
 
-        [Parameter(Mandatory = true, Position = 1, ValueFromPipeline = true, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = true, Position = 1, ValueFromPipeline = true,
             HelpMessage = "Run script against these specified objects. Takes input from Pipeline or when specified explicitly.")]
         [ValidateNotNullOrEmpty()]
         public PSObject InputObject { get; set; }
 
-        [Parameter(Mandatory = false, Position = 2, ValueFromPipeline = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false, Position = 2, ValueFromPipeline = false,
             HelpMessage = "Number of threads to be executed in parallel, by default one thread per logical CPU")]
         [ValidateRange(2,64)]
         public int MaxThreads { get; set; } = Environment.ProcessorCount;
 
-        [Parameter(Mandatory = false, Position = 4, ValueFromPipeline = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false, Position = 4, ValueFromPipeline = false,
             HelpMessage ="BatchSize controls the number of jobs to run before waiting for one of them to complete")]
         [ValidateRange(0,1000)]
         public int BatchSize { get; set; } = Environment.ProcessorCount;
 
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false, ParameterSetName = ModuleParameterSetName,
             HelpMessage = "Name of PS Modules or the Full path of the Modules (comma seperated) to load in to the Runspace for the command to work. " +
             "Specifiy 'All' to load all the possible modules or 'Loaded' to load the currently loaded modules")]
         public string[] ModulestoLoad { get; set; }
 
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false, ParameterSetName = ModuleParameterSetName,
             HelpMessage = "Name of PSSnapins (comma seperated) to load in to the Runspace for the command to work.")]
         public string[] PSSnapInsToLoad { get; set; }
 
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false, ParameterSetName = ModuleParameterSetName,
             HelpMessage = "Copies the local powershell variable names and its values to the Runspace. DON'T modify or loop through variables on the jobs as they are not thread-safe")]
         public SwitchParameter CopyLocalVariables;
 
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false, ParameterSetName = RemotePSParameterSetName,
             HelpMessage = "When specified, Remote Runspace opened on the host will be used")]
-        
         public PSObject UseRemotePSSession;
 
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false, ParameterSetName = RemotePSParameterSetName,
+            HelpMessage = "When specified, The typedata is not loaded in to the RunspacePool, Specify if loading typedata is delaying the creation of RunspacePool")]
+        public SwitchParameter LoadAllTypeDatas;
+
+        [Parameter(Mandatory = false,
             HelpMessage = "Provide any useful message to indicate the stage to the user")]
         public string ProgressBarStage { get; set; } = "Waiting on Jobs to complete";
 
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false,
             HelpMessage ="Cmdlet, by default waits for 30 Seconds for the first Job to complete before Queuing rest of the jobs from Pipeline. Use -Force to skip this check")]
         public SwitchParameter Force;
 
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false,
             HelpMessage ="Specifiy this switch if Logging to a file should be skipped")]
         public SwitchParameter NoFileLogging;
         
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false,
             HelpMessage ="When specified, the Progress bar is not shown")]
         public SwitchParameter Quiet;
 
-        [Parameter(Mandatory = false, ParameterSetName = DefaultParameterSetName,
+        [Parameter(Mandatory = false,
             HelpMessage = "When specified, instead of returing the Job results, returns the invokeall Job objects itself. It is useful when you want to access the Streams or other details of each job")]
         public SwitchParameter ReturnasJobObject;
 
@@ -216,6 +220,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     pSHost: Host,
                     maxRunspaces: MaxThreads,
                     debugStrings: out debugStrings,
+                    loadAllTypedata: LoadAllTypeDatas.IsPresent ? true : false,
                     useRemotePS: (PSSession)UseRemotePSSession?.BaseObject,
                     modules: ModulestoLoad,
                     snapIns: PSSnapInsToLoad,
