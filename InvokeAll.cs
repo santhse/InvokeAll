@@ -15,7 +15,7 @@ namespace PSParallel
     /// Invoke-All is the cmdlet exported from the Module. 
     /// It is a wrapper like function which takes input from Pipeline and process the commands consequently using runspaces.
     /// </summary>
-    [Cmdlet("Invoke", "All", SupportsShouldProcess = true)]
+    [Cmdlet("Invoke", "All", SupportsShouldProcess = true, DefaultParameterSetName = "Default")]
     [OutputType(typeof(PSObject))]
 
     public partial class InvokeAll : PSCmdlet
@@ -87,6 +87,10 @@ You cannot use alias or external scripts. If you are using a function from a cus
         [Parameter(Mandatory = false,
             HelpMessage = "When specified, instead of returing the Job results, returns the invokeall Job objects itself. It is useful when you want to access the Streams or other details of each job")]
         public SwitchParameter ReturnasJobObject;
+
+        [Parameter(Mandatory = false,
+    HelpMessage = "When specified, JobName is appended to the result object")]
+        public SwitchParameter AppendJobNameToResult;
 
         FunctionInfo proxyFunction = null;
         string commandName = null;

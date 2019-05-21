@@ -152,7 +152,14 @@
                 {
                     if (job.JobTask.Result?.Count > 0)
                     {
-                        WriteObject(job.JobTask.Result);
+                        foreach(PSObject result in job.JobTask.Result)
+                        {
+                            if (AppendJobNameToResult.IsPresent)
+                            {
+                                result.Members.Add(new PSNoteProperty("PSJobName", job.JobName));
+                            }
+                            WriteObject(result);
+                        }
                     }
                     else
                     {
