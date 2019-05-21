@@ -257,6 +257,8 @@ You cannot use alias or external scripts. If you are using a function from a cus
             catch (Exception e)
             {
                 ErrorRecord error = new ErrorRecord(e, e.GetType().Name, ErrorCategory.InvalidData, this);
+                //Log any debug strings
+                LogHelper.LogDebug(debugStrings, this);
                 LogHelper.Log(fileVerboseLogTypes, error.Exception.ToString(), this);
                 CleanupObjs(false);
 
