@@ -18,22 +18,34 @@
             All
         }
 
-        private interface ILogBase
+        internal static class LogHelper
         {
-            void Log<T>(T message, LogTarget logTarget);
-        }
-        internal class LogHost : ILogBase
-        {
-            InvokeAll InvokeAllInstance { get; set; }
-            string LogFile { get; set; }
+            static readonly string datetimeFormat = "yyyyMMddTHHmmss";
+            public static string logFile = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + 
+                "\\Iv" + System.DateTime.Now.ToString(datetimeFormat) + ".log";
+            const string progressStr = "Executing Jobs";
 
-            public LogHost(InvokeAll invokeAll, string log)
+            internal static void Log<T>(List<LogTarget> target, T message, InvokeAll invokeAllInstance)
             {
-                InvokeAllInstance = invokeAll;
-                LogFile = log;
+                foreach (LogTarget lT in target)
+                {
+                    Log(message, lT, invokeAllInstance);
+                }
+
+            }
+            internal static void LogDebug(List<string> debugStrs, InvokeAll invokeAllinstance)
+            {
+                foreach (string debugEntry in debugStrs)
+                {
+                    Log(debugEntry, LogTarget.HostDebug, invokeAllinstance);
+                }
             }
 
-            public void Log<T>(T message, LogTarget logTarget)
+            internal static void LogDebug(string debugStr, InvokeAll invokeAllinstance)
+            {
+                LogDebug(new List<string>() { debugStr }, invokeAllinstance);
+            }
+            public static void Log<T>(T message, LogTarget logTarget, InvokeAll invokeAll)
             {
                 string messageStr = null;
                 if (message is ErrorRecord)
@@ -45,13 +57,13 @@
                 {
                     messageStr = (string)(object)message;
                 }
-                string logEntry = string.Format("[{0}] {1}", System.DateTime.Now.ToString("yyyy-MM-dd-HHmmss"), messageStr);
+                string logEntry = string.Format("[{0}] {1}", System.DateTime.Now.ToString(datetimeFormat), messageStr);
                 switch (logTarget)
                 {
                     case LogTarget.File:
-                        if (!InvokeAllInstance.NoFileLogging.IsPresent)
+                        if (!invokeAll.NoFileLogging.IsPresent)
                         {
-                            using (StreamWriter streamWriter = new StreamWriter(LogFile, append: true))
+                            using (StreamWriter streamWriter = new StreamWriter(logFile, append: true))
                             {
                                 streamWriter.WriteLine(logEntry);
                                 streamWriter.Close();
@@ -59,52 +71,24 @@
                         }
                         break;
                     case LogTarget.HostVerbose:
-                        InvokeAllInstance.WriteVerbose(logEntry);
+                        invokeAll.WriteVerbose(logEntry);
                         break;
                     case LogTarget.HostDebug:
-                        InvokeAllInstance.WriteDebug(logEntry);
+                        invokeAll.WriteDebug(logEntry);
                         break;
                     case LogTarget.HostError:
                         if (message is ErrorRecord)
                         {
-                            InvokeAllInstance.WriteError((ErrorRecord)(object)message);
+                            invokeAll.WriteError((ErrorRecord)(object)message);
                         }
                         break;
                     case LogTarget.HostWarning:
-                        InvokeAllInstance.WriteWarning(logEntry);
+                        invokeAll.WriteWarning(logEntry);
                         break;
                     default:
+                        
                         break;
                 }
-            }
-
-        }
-        internal static class LogHelper
-        {
-            private static ILogBase logger = null;
-            const string progressStr = "Executing Jobs";
-            internal static void Log<T>(List<LogTarget> target, T message, InvokeAll invokeAllInstance)
-            {
-                foreach (LogTarget lT in target)
-                {
-                    logger = new LogHost(invokeAllInstance, invokeAllInstance.logFile);
-                    logger.Log(message, lT);
-                }
-
-            }
-
-            internal static void LogDebug(List<string> debugStrs, InvokeAll invokeAllinstance)
-            {
-                logger = new LogHost(invokeAllinstance, invokeAllinstance.logFile);
-                foreach (string debugEntry in debugStrs)
-                {
-                    logger.Log(debugEntry, LogTarget.HostDebug);
-                }
-            }
-
-            internal static void LogDebug(string debugStr, InvokeAll invokeAllinstance)
-            {
-                LogDebug(new List<string>() { debugStr }, invokeAllinstance);
             }
 
             internal static void LogProgress(string currentOperation, InvokeAll invokeAll, string statusStr = progressStr, int percentComplete = -1)
@@ -124,6 +108,8 @@
                 }
                 invokeAll.WriteProgress(progressRecord);
             }
+
         }
+
     }
 }

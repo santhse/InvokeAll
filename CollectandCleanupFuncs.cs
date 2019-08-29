@@ -24,11 +24,11 @@
                         PowerShell = ps,
                         ID = jobID
                     };
-
                 }
                 return matchingJob;
             }
         }
+
         private void CleanupObjs(bool isFromPipelineStoppedException)
         {
             LogHelper.LogProgress("Completed", this, "Completed");
@@ -50,9 +50,10 @@
 
             if(!NoFileLogging.IsPresent)
             {
-                LogHelper.Log(fileVerboseLogTypes, (string.Format("Log file updated: {0}", logFile)), this);
+                LogHelper.Log(fileVerboseLogTypes, (string.Format("Log file updated: {0}", LogHelper.logFile)), this);
             }
         }
+
         private void CollectJobs(int jobID)
         {
             if (!Force.IsPresent && jobID == 1)
@@ -60,31 +61,22 @@
                 LogHelper.LogProgress("Error check: Waiting 30 seconds for the first job to complete", this);
 
                 //For the first job, default the wait to 30 sceonds and do a error check, if it is not completed, prompt user with option to wait or to continue..
-                try
-                {                    
-                    if ((bool)jobs.First().Value.JobTask.Wait(TimeSpan.FromSeconds(30)))
-                    {
-                        LogHelper.Log(fileVerboseLogTypes, "First Job completed",this);
-                        CollectJob(jobs.First().Value);
-                        LogHelper.Log(fileVerboseLogTypes, "Will queue rest of the Jobs as the current Batch completes", this);
-                        LogHelper.Log(fileVerboseLogTypes, string.Format("Queuing Jobs, Batch Size {0}", BatchSize), this);
-                        return;
-                    }
-                    else
-                    {
-                        LogHelper.Log(fileVerboseLogTypes, "First Job didn't complete in 30 seconds", this);
-                        if (!ShouldContinue("First instance still running, Want to continue queuing the rest of the jobs?", "FirstJob Error Check"))
-                        {
-                            throw new Exception("Aborted from the first instance error check");
-                        }
-                    }
-                }
-                catch (Exception e)
+                if ((bool)jobs.First().Value.JobTask.Wait(TimeSpan.FromSeconds(30)))
                 {
-                    ErrorRecord error = new ErrorRecord(e, e.GetType().Name, ErrorCategory.InvalidResult, this);
-                    ThrowTerminatingError(error);
+                    LogHelper.Log(fileVerboseLogTypes, "First Job completed",this);
+                    CollectJob(jobs.First().Value);
+                    LogHelper.Log(fileVerboseLogTypes, "Will queue rest of the Jobs as the current Batch completes", this);
+                    LogHelper.Log(fileVerboseLogTypes, string.Format("Queuing Jobs, Batch Size {0}", BatchSize), this);
+                    return;
                 }
-                
+                else
+                {
+                    LogHelper.Log(fileVerboseLogTypes, "First Job didn't complete in 30 seconds", this);
+                    if (!ShouldContinue("First instance still running, Want to continue queuing the rest of the jobs?", "FirstJob Error Check"))
+                    {
+                        throw new Exception("Aborted from the first instance error check");
+                    }
+                }
             }
 
             Job[] pendingJobs = jobs.Values.Where(q => q.IsCollected != true).ToArray(); 
@@ -95,15 +87,15 @@
             }
 
             int completedJobs = jobNum - pendingJobs.Count();
-            LogHelper.LogProgress(string.Format("Active Queue: {0} / Completed: {1} - Faulted {2}, waiting for any one of them to complete", pendingJobs.Count(), completedJobs, faultedJobsCount), this, ProgressBarStage);
+            LogHelper.LogProgress(string.Format("Active Queue: {0} / Completed: {1} - Faulted {2}, waiting for any one of them to complete", 
+                pendingJobs.Count(), completedJobs, faultedJobsCount), 
+                this, 
+                ProgressBarStage);
             if (completedJobs % BatchSize == 0)
             {
                 LogHelper.Log(fileVerboseLogTypes, string.Format("Completed Jobs: {0}. Pending Jobs: {1}", completedJobs, pendingJobs.Count()), this);
             }
 
-            //wait on the pendingjobs. Task.Waitany will return the index of the Completed Job, using the index find the job in the Jobs dictionary and collect the results
-            //ToDo: Implement timeout logic for each Job e.g: (JobTimeoutinSecs == -1) ? TimeSpan.FromMilliseconds(-1) : TimeSpan.FromSeconds(JobTimeoutinSecs));
-            //-1 is returned if the timeout occurred, implement a way to find timeout on each job
             int completedTask = Task.WaitAny((from pendingJob in pendingJobs select pendingJob.JobTask).ToArray());
             
             if(jobs.TryGetValue(pendingJobs.ElementAt(completedTask).ID, out Job processedJob) == true)
@@ -121,20 +113,16 @@
             LogHelper.LogDebug(string.Format("Collecting JobID:{0}",job.ID), this);
             if (job.IsFaulted == true || job.PowerShell.HadErrors == true)
             {
-                //when a job is faulted, decide here to either prompt or just continue..
-                //if there is a way to find throttling implement logic to delay the queueing of next tasks
                 if (!Force.IsPresent && job.ID == 1)
                 {
                     LogHelper.Log(fileVerboseLogTypes, "There was an error from First job, will stop queueing jobs.", this);
                     if (job.Exceptions != null)
                     {
-                        ErrorRecord error = new ErrorRecord(job.Exceptions, job.Exceptions.GetType().Name, ErrorCategory.InvalidResult, this);
-                        ThrowTerminatingError(error);
+                        throw job.Exceptions;
                     }
                     else
                     {
-                        ErrorRecord error = new ErrorRecord(new Exception(job.PowerShell.Streams.Error.ToString()), "CmdErr", ErrorCategory.InvalidResult, this);
-                        ThrowTerminatingError(error);
+                        ThrowTerminatingError(job.PowerShell.Streams.Error.FirstOrDefault());
                     }
                 }
                 else
@@ -206,7 +194,6 @@
                     {
                         LogHelper.Log(fileErrorLogTypes, errorRecord, this);
                     }
-
                 }
             }
         }

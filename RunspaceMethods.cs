@@ -9,14 +9,20 @@
     using System.Collections.Generic;
     using System.Collections;
     using System.Collections.ObjectModel;
-
-    public static class RunspaceMethods
+    
+    internal static class RunspaceMethods
     {
+        /// <summary>
+        /// Run Get-Command for the passed command on the current powershell instance to discover the CommandInfo
+        /// </summary>
+        /// <param name="scriptBlock">Entire command string passed to mulithread</param>
+        /// <param name="cmd">Cmdlet or Command discovered</param>
+        /// <returns>CommandInfo of the discovreed command</returns>
         internal static CommandInfo CmdDiscovery(ScriptBlock scriptBlock, out string cmd)
         {
             IEnumerable<Ast> cmdAsts = scriptBlock.Ast.FindAll(ast => ast is CommandAst, true);
 
-            if ((cmdAsts?.FirstOrDefault() is CommandAst cmdElement))
+            if (cmdAsts?.FirstOrDefault() is CommandAst cmdElement)
             {
                 cmd = cmdElement.CommandElements.First().ToString();
                 var cmdScript = ScriptBlock.Create("Get-Command " + cmd + " | Select-Object -First 1");
@@ -27,6 +33,12 @@
             return null;
         }
 
+        /// <summary>
+        /// Create a Proxy Function for the command supplied.
+        /// </summary>
+        /// <param name="commandInfo"></param>
+        /// <param name="debugStrings"></param>
+        /// <returns></returns>
         internal static FunctionInfo CreateProxyFunction(CommandInfo commandInfo, out List<string> debugStrings)
         {
             debugStrings = new List<string>();
@@ -59,6 +71,7 @@
             }
             catch (ActionPreferenceStopException ae) when ((ae.ErrorRecord.Exception is PSArgumentException) && ae.ErrorRecord.Exception.Message.EndsWith("already exists."))
             {
+                //Todo: throwterminatingerror here
                 debugStrings.Add("ProxyCommand Already Exsits");
                 string removeProxyFunction = string.Format("Remove-Item -Path Function:{0} -Force", proxyCommandName);
                 ScriptBlock.Create(removeProxyFunction).Invoke();
@@ -68,8 +81,29 @@
 
         }
 
-        internal static RunspacePool CreateRunspacePool(CommandInfo commandInfo, PSHost pSHost, int maxRunspaces, out List<string> debugStrings, 
-            PSSession useRemotePS, bool loadAllTypedata, string[] modules = null, string[] modulesPath = null, string[] snapIns = null, IList<SessionStateVariableEntry> variableEntries = null)
+        /// <summary>
+        /// Create the Runspace pool.
+        /// For remote runspaces, load the datatypes optionally to support serialization
+        /// For local commands, load the modules and snapins required or requested
+        /// </summary>
+        /// <param name="commandInfo"></param>
+        /// <param name="pSHost"></param>
+        /// <param name="maxRunspaces"></param>
+        /// <param name="debugStrings"></param>
+        /// <param name="useRemotePS"></param>
+        /// <param name="loadAllTypedata"></param>
+        /// <param name="modules"></param>
+        /// <param name="modulesPath"></param>
+        /// <param name="snapIns"></param>
+        /// <param name="variableEntries"></param>
+        /// <returns></returns>
+        internal static RunspacePool CreateRunspacePool(CommandInfo commandInfo, 
+            PSHost pSHost, 
+            int maxRunspaces, 
+            out List<string> debugStrings, 
+            PSSession useRemotePS, 
+            bool loadAllTypedata, 
+            string[] modules = null, string[] modulesPath = null, string[] snapIns = null, IList<SessionStateVariableEntry> variableEntries = null)
         {
             debugStrings = new List<string>();
             RunspaceConnectionInfo runspaceConnectionInfo = null;
@@ -114,7 +148,7 @@
                 
                 TypeTable typeTable = TypeTable.LoadDefaultTypeFiles();
                 
-                if(loadAllTypedata == true)
+                if(loadAllTypedata)
                 {
                     Collection<PSObject> typeDatas = ScriptBlock.Create("Get-TypeData").Invoke();
                     foreach (PSObject typeData in typeDatas)
@@ -131,10 +165,8 @@
                         }
                     }
                 }
-
                 return RunspaceFactory.CreateRunspacePool(1, Environment.ProcessorCount, runspaceConnectionInfo, pSHost, typeTable);
             }
-
 
             InitialSessionState iss = InitialSessionState.CreateDefault2();
             List<string> modulesToLoad = new List<String>();
@@ -222,7 +254,6 @@
         /// <returns></returns>
         internal static IDictionary FindParams(FunctionInfo proxyCommand, ScriptBlock scriptToRun, string cmdStr, PSObject inputObject)
         {
-            //ToDo: converted script is always the same, do it just once elsewhere
             string convertedScript = "param($Inputobject) " + scriptToRun.ToString();
             convertedScript = convertedScript.Replace(cmdStr, proxyCommand.Name);
             ScriptBlock commandBlock = ScriptBlock.Create(convertedScript.Replace("$_", "$inputobject"));

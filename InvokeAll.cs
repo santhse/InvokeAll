@@ -6,7 +6,6 @@ using System.Management.Automation.Runspaces;
 using System.Collections.Generic;
 using System.Collections;
 using System.Collections.Concurrent;
-using System.IO;
 using static PSParallel.Logger;
 
 namespace PSParallel
@@ -125,11 +124,6 @@ You cannot use alias or external scripts. If you are using a function from a cus
         //ToDo: Implement retry
         ConcurrentDictionary<int, Job> jobs = new ConcurrentDictionary<int, Job>();//(MaxParallel, MaxParallel);
         
-        //Log file for each run
-        const string datetimeFormat = "yyyy-MM-dd-HHmmss";
-        public string logFile = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + "\\Iv" +
-                System.DateTime.Now.ToString(datetimeFormat) + ".log";
-
         /// <summary>
         /// Discover the commad passed and prepare the RunspacePool
         /// </summary>
@@ -172,7 +166,9 @@ You cannot use alias or external scripts. If you are using a function from a cus
                 }
                 else
                 {
-                    throw new Exception("Invoke-All doesn't implement methods to run this command, Supported types are PSScripts, PSCmdlets and PSFunctions");
+                    string notSupportedErrorString = "Invoke-All doesn't implement methods to run this command, Supported types are PSScripts, PSCmdlets and PSFunctions";
+                    LogHelper.Log(fileVerboseLogTypes, notSupportedErrorString, this);
+                    throw new Exception(notSupportedErrorString);
                 }
 
                 proxyFunction = RunspaceMethods.CreateProxyFunction(cmdInfo, out debugStrings);
@@ -232,7 +228,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     );
 
                 LogHelper.LogDebug(debugStrings, this);
-                runspacePool.ThreadOptions = PSThreadOptions.ReuseThread;//PSThreadOptions.UseNewThread;
+                runspacePool.ThreadOptions = PSThreadOptions.ReuseThread;
                 runspacePool.Open();
                 LogHelper.LogDebug("Opened RunspacePool", this);
 
@@ -372,7 +368,6 @@ You cannot use alias or external scripts. If you are using a function from a cus
                         throw new Exception("Most jobs faulted");
                     }
                 }
-
             }
             catch (Exception e)
             {
