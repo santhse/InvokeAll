@@ -9,7 +9,8 @@
     using System.Collections.Generic;
     using System.Collections;
     using System.Collections.ObjectModel;
-    
+    using System.IO;
+
     internal static class RunspaceMethods
     {
         /// <summary>
@@ -207,7 +208,13 @@
                         if (functionInfo.ScriptBlock.File != null)
                         {
                             debugStrings.Add(string.Format("The command is a custom function {0} from file {1}", commandInfo.Name, functionInfo.ScriptBlock.File));
-                            modulesToLoad.Add(functionInfo.ScriptBlock.File);
+                            FileInfo scriptFileInfo = new FileInfo(functionInfo.ScriptBlock.File);
+                            
+                            //if the function is from a PS1 script, don't load it as a module. The script will be executed and will cause unintended results
+                            if (!scriptFileInfo.Extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
+                            {
+                                modulesToLoad.Add(functionInfo.ScriptBlock.File);
+                            }
                         }
                     }
                     break;
