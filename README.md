@@ -7,7 +7,12 @@ Download the module file from releases tab and import it on the powershell windo
  You can also install it from Powershell gallery by running command, 
     
     Install-Module Invokeall
+Commands that are exported from the Module:
 
+    Invoke-All
+    Get-InvokeAllJobsStatus
+    Receive-InvokeAllJobs
+ 
 Examples:
         
     Get-Mailbox | Invoke-All { Get-MailboxStatistics -Identity $_.windowsEmailaddress } -MaxThreads 10 -BatchSize 50 -Force
