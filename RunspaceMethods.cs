@@ -145,8 +145,8 @@
                         }
                     }
                 }
+
                 debugStrings.Add(string.Format("Using connection info {0}", runspaceConnectionInfo.ComputerName));
-                
                 TypeTable typeTable = TypeTable.LoadDefaultTypeFiles();
                 
                 if(loadAllTypedata)

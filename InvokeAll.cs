@@ -6,6 +6,7 @@ using System.Management.Automation.Runspaces;
 using System.Collections.Generic;
 using System.Collections;
 using System.Collections.Concurrent;
+using static PSParallel.CollectAndCleanUpMethods;
 using static PSParallel.Logger;
 
 namespace PSParallel
@@ -72,6 +73,10 @@ You cannot use alias or external scripts. If you are using a function from a cus
         public string ProgressBarStage { get; set; } = "Waiting on Jobs to complete";
 
         [Parameter(Mandatory = false,
+            HelpMessage = "When specified, job Objects are created and returned immediately. Use Check-InvokeAllJobs or Receive-InvokeAllJobs to check and collect the results")]
+        public SwitchParameter Async;
+
+        [Parameter(Mandatory = false,
             HelpMessage ="Cmdlet, by default waits for 30 Seconds for the first Job to complete before Queuing rest of the jobs from Pipeline. Use -Force to skip this check")]
         public SwitchParameter Force;
 
@@ -91,21 +96,16 @@ You cannot use alias or external scripts. If you are using a function from a cus
     HelpMessage = "When specified, JobName is appended to the result object")]
         public SwitchParameter AppendJobNameToResult;
 
-        FunctionInfo proxyFunction = null;
+        internal FunctionInfo proxyFunction = null;
         string commandName = null;
         CommandInfo cmdInfo = null;
         //Command types that are supported by this script
         CommandTypes[] supportedCommandTypes = { CommandTypes.ExternalScript, CommandTypes.Cmdlet, CommandTypes.Function, CommandTypes.Alias };
-        RunspacePool runspacePool = null;
+        internal RunspacePool runspacePool = null;
         
-        private List<LogTarget> fileVerboseLogTypes = new List<LogTarget> { LogTarget.File, LogTarget.HostVerbose};
-        private List<LogTarget> fileWarningLogTypes = new List<LogTarget> { LogTarget.File, LogTarget.HostWarning };
-        private List<LogTarget> fileErrorLogTypes = new List<LogTarget> { LogTarget.File, LogTarget.HostError };
-        private List<LogTarget> debugLogTypes = new List<LogTarget> { LogTarget.HostDebug };
-
         int promptOnPercentFaults = 90;
         
-        private class Job
+        public class Job
         {
             public string JobName { get; set; }
             public Task<PSDataCollection<PSObject>> JobTask { get; set; }
@@ -117,6 +117,26 @@ You cannot use alias or external scripts. If you are using a function from a cus
 
             ~Job(){
                 this.PowerShell?.Dispose();
+            }
+        }
+        
+        private readonly object createJobLock = new object();
+        private Job CheckandCreateJob(string jobName, Task<PSDataCollection<PSObject>> task, int jobID, PowerShell ps)
+        {
+            lock (createJobLock)
+            {
+                Job matchingJob = jobs.Values.Where(j => j.JobTask.Id == task.Id)?.FirstOrDefault();
+                if (matchingJob == null)
+                {
+                    matchingJob = new Job
+                    {
+                        JobName = jobName,
+                        JobTask = task,
+                        PowerShell = ps,
+                        ID = jobID
+                    };
+                }
+                return matchingJob;
             }
         }
 
@@ -137,7 +157,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
             {
                 throw new Exception("Cmdlet will only accept input from Pipeline. Please see examples");
             }
-            LogHelper.LogProgress("Starting script", this);
+            LogHelper.LogProgress("Starting script", this, quiet:Quiet.IsPresent);
 
             if (BatchSize < MaxThreads)
             {
@@ -146,13 +166,14 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     new ErrorRecord(new Exception(string.Format("The Batchsize {0} is less than the MaxThreads {1}. If you have reduced the Batchsize as a result of throttling, " +
                     "this is ok, else increase the BatchSize for better performance", BatchSize, MaxThreads)),
                     "BadParameterValues", ErrorCategory.InvalidData, this),
-                    this);
+                    this,
+                    NoFileLogging.IsPresent);
             }
             
             try
             {
-                LogHelper.Log(fileVerboseLogTypes, "Starting script", this);
-                LogHelper.Log(fileVerboseLogTypes, MyInvocation.Line, this);
+                LogHelper.Log(fileVerboseLogTypes, "Starting script", this, NoFileLogging.IsPresent);
+                LogHelper.Log(fileVerboseLogTypes, MyInvocation.Line, this, NoFileLogging.IsPresent);
                 cmdInfo = RunspaceMethods.CmdDiscovery(ScriptToRun, out commandName);
 
                 if (cmdInfo == null)
@@ -162,15 +183,15 @@ You cannot use alias or external scripts. If you are using a function from a cus
 
                 if (supportedCommandTypes.Contains(cmdInfo.CommandType))
                 {
-                    LogHelper.Log(fileVerboseLogTypes, String.Format("The supplied command {0} is of type {1}", commandName, cmdInfo.CommandType.ToString()),this);
+                    LogHelper.Log(fileVerboseLogTypes, String.Format("The supplied command {0} is of type {1}", commandName, cmdInfo.CommandType.ToString()),this, NoFileLogging.IsPresent);
                 }
                 else
                 {
                     string notSupportedErrorString = "Invoke-All doesn't implement methods to run this command, Supported types are PSScripts, PSCmdlets and PSFunctions";
-                    LogHelper.Log(fileVerboseLogTypes, notSupportedErrorString, this);
+                    LogHelper.Log(fileVerboseLogTypes, notSupportedErrorString, this, NoFileLogging.IsPresent);
                     throw new Exception(notSupportedErrorString);
                 }
-
+                
                 proxyFunction = RunspaceMethods.CreateProxyFunction(cmdInfo, out debugStrings);
                 LogHelper.LogDebug(debugStrings, this);
                 if (proxyFunction == null)
@@ -179,7 +200,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                 }
                 else
                 {
-                    LogHelper.Log(fileVerboseLogTypes, string.Format("Created ProxyFunction {0}", proxyFunction.Name), this);
+                    LogHelper.Log(fileVerboseLogTypes, string.Format("Created ProxyFunction {0}", proxyFunction.Name), this, NoFileLogging.IsPresent);
                 }
 
                 IList<SessionStateVariableEntry> stateVariableEntries = new List<SessionStateVariableEntry>();
@@ -212,15 +233,20 @@ You cannot use alias or external scripts. If you are using a function from a cus
 
                     IEnumerable<PSVariable> variables = ScriptBlock.Create(psGetUDVariables).Invoke().Select(v => v.BaseObject as PSVariable);
                     variables.ToList().ForEach(v => stateVariableEntries.Add(new SessionStateVariableEntry(v.Name, v.Value, null)));
-                    LogHelper.Log(fileVerboseLogTypes, string.Format("Will copy {0} local variables to the Runspace. Use -debug switch to see the details",stateVariableEntries.Count), this);
+                    LogHelper.Log(fileVerboseLogTypes, 
+                        string.Format("Will copy {0} local variables to the Runspace. Use -debug switch to see the details",stateVariableEntries.Count), 
+                        this,
+                        NoFileLogging.IsPresent);
                 }
 
+                //Create a runspace pool with the cmdInfo collected
+                //Using Dummy PSHost to avoid any messages to the Host. Job will collect all the output on the powershell streams
                 runspacePool = RunspaceMethods.CreateRunspacePool(
                     commandInfo: cmdInfo,
-                    pSHost: Host,
+                    pSHost: new DummyCustomPSHost(),
                     maxRunspaces: MaxThreads,
                     debugStrings: out debugStrings,
-                    loadAllTypedata: LoadAllTypeDatas.IsPresent ? true : false,
+                    loadAllTypedata: LoadAllTypeDatas.IsPresent,
                     useRemotePS: (PSSession)UseRemotePSSession?.BaseObject,
                     modules: ModulestoLoad,
                     snapIns: PSSnapInsToLoad,
@@ -254,7 +280,10 @@ You cannot use alias or external scripts. If you are using a function from a cus
                 {
                     if (ModulestoLoad != null || PSSnapInsToLoad != null)
                     {
-                        LogHelper.Log(fileWarningLogTypes, "No additional modules that were specified to be loaded will be loaded as it is not supported when using remote PSSession", this);
+                        LogHelper.Log(fileWarningLogTypes, 
+                            "No additional modules that were specified to be loaded will be loaded as it is not supported when using remote PSSession", 
+                            this,
+                            NoFileLogging.IsPresent);
                     }
                 }
                 
@@ -264,14 +293,10 @@ You cannot use alias or external scripts. If you are using a function from a cus
                 ErrorRecord error = new ErrorRecord(e, e.GetType().Name, ErrorCategory.InvalidData, this);
                 //Log any debug strings
                 LogHelper.LogDebug(debugStrings, this);
-                LogHelper.Log(fileVerboseLogTypes, error.Exception.ToString(), this);
-                CleanupObjs(false);
+                LogHelper.Log(fileVerboseLogTypes, error.Exception.ToString(), this, NoFileLogging.IsPresent);
+                CleanupObjs(this, proxyFunction, runspacePool, false);
 
                 ThrowTerminatingError(error);
-            }
-            finally
-            {
-                
             }
         }
         
@@ -299,8 +324,8 @@ You cannot use alias or external scripts. If you are using a function from a cus
 
                 if (jobNum == 1)
                 {
-                    LogHelper.LogProgress("Queuing First Job", this);
-                    LogHelper.Log(fileVerboseLogTypes, "Paramaters used for the first job:", this);
+                    LogHelper.LogProgress("Queuing First Job", this, quiet:Quiet.IsPresent);
+                    LogHelper.Log(fileVerboseLogTypes, "Paramaters used for the first job:", this, NoFileLogging.IsPresent);
                     foreach (DictionaryEntry param in psParams)
                     {
                         string paramValues = null;
@@ -315,7 +340,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                         {
                             paramValues = param.Value?.ToString();
                         }
-                        LogHelper.Log(fileVerboseLogTypes, string.Format("{0} - {1}", param.Key.ToString(), paramValues), this);
+                        LogHelper.Log(fileVerboseLogTypes, string.Format("{0} - {1}", param.Key.ToString(), paramValues), this, NoFileLogging.IsPresent);
                     }
                 }
 
@@ -356,69 +381,87 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     throw new Exception(string.Format("Unable to add job ID: {0}", job.ID));
                 }
                 
-                if (jobs.Count == BatchSize || (!this.Force.IsPresent && (jobNum == 1)))
+                if (!Async.IsPresent
+                    && (jobs.Count == BatchSize || (!this.Force.IsPresent && (jobNum == 1))))
                 {
-                    CollectJobs(jobNum);
+                    CollectJobs(this, jobs, jobNum, ProgressBarStage, Force, ReturnasJobObject, AppendJobNameToResult, jobNum);
                 }
 
-                if (!Force.IsPresent && (jobs.Values.Where(f => f.IsFaulted == true).Count() / jobNum * 100) > promptOnPercentFaults)
+                if (!Force.IsPresent && 
+                    (jobs.Values.Where(f => f.IsFaulted == true).Count() / jobNum * 100) > promptOnPercentFaults)
                 {
                     if (!ShouldContinue(string.Format("More than {0}% of the jobs are faulted, Do you want to continue with processing rest of the Inputs?", promptOnPercentFaults), "Most Jobs Faulted"))
                     {
                         throw new Exception("Most jobs faulted");
                     }
                 }
+
+                if (Async.IsPresent)
+                {
+                    WriteObject(job);
+                }
+                
             }
             catch (Exception e)
             {
                 ErrorRecord error = new ErrorRecord(e, e.GetType().Name, ErrorCategory.InvalidData, this);
-                LogHelper.Log(fileVerboseLogTypes, error.Exception.ToString(), this);
-                CleanupObjs(e is PipelineStoppedException);
+                LogHelper.Log(fileVerboseLogTypes, error.Exception.ToString(), this, NoFileLogging.IsPresent);
+                CleanupObjs(this, proxyFunction, runspacePool, e is PipelineStoppedException);
                 ThrowTerminatingError(error);
             }
             
         }
-
+        
         /// <summary>
         /// Collect the last batch of Jobs, process any faulted jobs and Exit
         /// </summary>
         protected override void EndProcessing()
         {
-            try
+            if (Async.IsPresent)
             {
-                LogHelper.Log(fileVerboseLogTypes, "In EndProcessing", this);
+                //Nothing needs to be done here as Jobs are executed in Aysnc way.
+                //Cleanup the ProxyFunction as user may decide to run the same command again
+                CleanupObjs(this, proxyFunction, runspacePool, false, true);
+            }
+            else
+            {
+                try
+                {
+                    LogHelper.Log(fileVerboseLogTypes, "In EndProcessing", this, NoFileLogging.IsPresent);
 
-                //Collect the last batch of jobs
-                while(jobs.Values.Where(j => j.IsCollected != true).Count() > 0)
-                {
-                    CollectJobs(jobNum);
+                    //Collect the last batch of jobs
+                    while (jobs.Values.Where(j => j.IsCollected != true).Count() > 0)
+                    {
+                        CollectJobs(this, jobs, jobNum, ProgressBarStage, Force, ReturnasJobObject, AppendJobNameToResult, jobNum);
+                    }
+
+                    //At this point we will only have the faulted jobs
+                    IEnumerable<Job> faultedJobs = jobs.Values.Where(f => f.IsFaulted == true || f.PowerShell.HadErrors == true);
+                    if (faultedJobs.Count() > 0)
+                    {
+                        LogHelper.Log(fileWarningLogTypes, string.Format("Completed processing jobs. Jobs collected: {0}. Faulted Jobs: {1}", jobNum, faultedJobs.Count()), this, NoFileLogging.IsPresent);
+                        LogHelper.Log(fileWarningLogTypes, "Please review the errors", this, NoFileLogging.IsPresent);
+                    }
+
                 }
-                
-                //At this point we will only have the faulted jobs
-                IEnumerable<Job> faultedJobs = jobs.Values.Where(f => f.IsFaulted == true || f.PowerShell.HadErrors == true);
-                if(faultedJobs.Count() > 0)
+                catch (Exception e)
                 {
-                    LogHelper.Log(fileWarningLogTypes, string.Format("Completed processing jobs. Jobs collected: {0}. Faulted Jobs: {1}", jobNum, faultedJobs.Count()), this);
-                    LogHelper.Log(fileWarningLogTypes, "Please review the errors", this);
+                    ErrorRecord error = new ErrorRecord(e, e.GetType().Name, ErrorCategory.InvalidData, this);
+                    LogHelper.Log(fileVerboseLogTypes, error.Exception.ToString(), this, NoFileLogging.IsPresent);
+                    CleanupObjs(this, proxyFunction, runspacePool, e is PipelineStoppedException);
+                    ThrowTerminatingError(error);
                 }
-                
+                finally
+                {
+                    CleanupObjs(this, proxyFunction, runspacePool, false, false);
+                }
             }
-            catch (Exception e)
-            {
-                ErrorRecord error = new ErrorRecord(e, e.GetType().Name, ErrorCategory.InvalidData, this);
-                LogHelper.Log(fileVerboseLogTypes, error.Exception.ToString(), this);
-                CleanupObjs(e is PipelineStoppedException);
-                ThrowTerminatingError(error);
-            }
-            finally
-            {
-                CleanupObjs(false);
-            }
+            
         }
         
         protected override void StopProcessing()
         {
-            CleanupObjs(true);
+            CleanupObjs(this, proxyFunction, runspacePool, true, false);
         }
     }
 }

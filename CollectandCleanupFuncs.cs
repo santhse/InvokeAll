@@ -4,41 +4,24 @@
     using System;
     using System.Threading.Tasks;
     using System.Linq;
+    using System.Management.Automation.Runspaces;
+    using System.Collections.Concurrent;
     using static PSParallel.Logger;
-
-    partial class InvokeAll : PSCmdlet
+    using Job = InvokeAll.Job;
+    
+    internal static class CollectAndCleanUpMethods
     {
-        private readonly object createJobLock = new object();
-        private int faultedJobsCount = 0;
-        private Job CheckandCreateJob(string jobName, Task<PSDataCollection<PSObject>> task, int jobID, PowerShell ps)
+        internal static void CleanupObjs(PSCmdlet invokeAll, FunctionInfo proxyFunctionInfo, RunspacePool runspacePool, bool isFromPipelineStoppedException, 
+            bool isAsyncEnd = false, bool noFileLogging = false, bool quiet = false)
         {
-            lock(createJobLock)
+            LogHelper.LogProgress("Completed", invokeAll, "Completed", quiet:quiet);
+            LogHelper.Log(fileVerboseLogTypes, "In Cleanup", invokeAll, noFileLogging);
+            if (!isFromPipelineStoppedException && proxyFunctionInfo != null)
             {
-                Job matchingJob = jobs.Values.Where(j => j.JobTask.Id == task.Id)?.FirstOrDefault();
-                if (matchingJob == null)
-                {
-                    matchingJob = new Job
-                    {
-                        JobName = jobName,
-                        JobTask = task,
-                        PowerShell = ps,
-                        ID = jobID
-                    };
-                }
-                return matchingJob;
-            }
-        }
-
-        private void CleanupObjs(bool isFromPipelineStoppedException)
-        {
-            LogHelper.LogProgress("Completed", this, "Completed");
-            LogHelper.Log(fileVerboseLogTypes, "In Cleanup", this);
-            if (!isFromPipelineStoppedException && proxyFunction != null)
-            {
-                ScriptBlock.Create(@"Remove-Item Function:" + proxyFunction.Name).Invoke();
+                ScriptBlock.Create(@"Remove-Item Function:" + proxyFunctionInfo.Name).Invoke();
             }
 
-            if (runspacePool != null)
+            if (!isAsyncEnd && runspacePool != null)
             {
                 if (runspacePool.ConnectionInfo != null)
                 {
@@ -47,94 +30,103 @@
                 runspacePool.Close();
                 runspacePool.Dispose();
             }
-
-            if(!NoFileLogging.IsPresent)
-            {
-                LogHelper.Log(fileVerboseLogTypes, (string.Format("Log file updated: {0}", LogHelper.logFile)), this);
-            }
         }
 
-        private void CollectJobs(int jobID)
+        internal static void CollectJobs(PSCmdlet invokeAll, ConcurrentDictionary<int,Job> jobs, int totalJobs, string progressBarStage, 
+            bool force, bool returnAsJobObject, bool appendJobNameToResult, 
+            int jobID = 0, bool noFileLogging = false, bool quiet = false)
         {
-            if (!Force.IsPresent && jobID == 1)
+            if (!force && jobID == 1)
             {
-                LogHelper.LogProgress("Error check: Waiting 30 seconds for the first job to complete", this);
-
+                LogHelper.LogProgress("Error check: Waiting 30 seconds for the first job to complete", invokeAll, quiet:quiet);
+                
                 //For the first job, default the wait to 30 sceonds and do a error check, if it is not completed, prompt user with option to wait or to continue..
                 if ((bool)jobs.First().Value.JobTask.Wait(TimeSpan.FromSeconds(30)))
                 {
-                    LogHelper.Log(fileVerboseLogTypes, "First Job completed",this);
-                    CollectJob(jobs.First().Value);
-                    LogHelper.Log(fileVerboseLogTypes, "Will queue rest of the Jobs as the current Batch completes", this);
-                    LogHelper.Log(fileVerboseLogTypes, string.Format("Queuing Jobs, Batch Size {0}", BatchSize), this);
+                    LogHelper.Log(fileVerboseLogTypes, "First Job completed", invokeAll, noFileLogging);
+                    Job firstCollectedJob = CollectJob(invokeAll, jobs.First().Value, returnAsJobObject, force, appendJobNameToResult);
+
+                    if (!jobs.TryRemove(firstCollectedJob.ID, out Job removedJob) == true)
+                    {
+                        LogHelper.LogDebug(string.Format("Unable to remove Job {0}", firstCollectedJob.ID), invokeAll);
+                    }
+                    LogHelper.Log(fileVerboseLogTypes, "Will queue rest of the Jobs as the current Batch completes", invokeAll, noFileLogging);
+
                     return;
                 }
                 else
                 {
-                    LogHelper.Log(fileVerboseLogTypes, "First Job didn't complete in 30 seconds", this);
-                    if (!ShouldContinue("First instance still running, Want to continue queuing the rest of the jobs?", "FirstJob Error Check"))
+                    LogHelper.Log(fileVerboseLogTypes, "First Job didn't complete in 30 seconds", invokeAll, noFileLogging);
+                    if (!invokeAll.ShouldContinue("First instance still running, Want to continue queuing the rest of the jobs?", "FirstJob Error Check"))
                     {
                         throw new Exception("Aborted from the first instance error check");
                     }
                 }
             }
 
-            Job[] pendingJobs = jobs.Values.Where(q => q.IsCollected != true).ToArray(); 
+            var pendingJobs = jobs.Where(q => q.Value.IsCollected != true);
+            var faultedJobs = jobs.Where(f => f.Value.IsFaulted == true || f.Value.PowerShell.HadErrors == true);
             if (pendingJobs.Count() <= 0)
             {
-                LogHelper.Log(fileVerboseLogTypes, "There are no pending jobs to collect", this);
+                LogHelper.Log(fileVerboseLogTypes, "There are no pending jobs to collect", invokeAll, noFileLogging);
                 return;
             }
 
-            int completedJobs = jobNum - pendingJobs.Count();
+            int completedJobs = totalJobs - pendingJobs.Count();
             LogHelper.LogProgress(string.Format("Active Queue: {0} / Completed: {1} - Faulted {2}, waiting for any one of them to complete", 
-                pendingJobs.Count(), completedJobs, faultedJobsCount), 
-                this, 
-                ProgressBarStage);
-            if (completedJobs % BatchSize == 0)
-            {
-                LogHelper.Log(fileVerboseLogTypes, string.Format("Completed Jobs: {0}. Pending Jobs: {1}", completedJobs, pendingJobs.Count()), this);
-            }
+                pendingJobs.Count(), completedJobs, faultedJobs.Count()), 
+                invokeAll, 
+                progressBarStage, quiet:quiet);
 
-            int completedTask = Task.WaitAny((from pendingJob in pendingJobs select pendingJob.JobTask).ToArray());
-            
-            if(jobs.TryGetValue(pendingJobs.ElementAt(completedTask).ID, out Job processedJob) == true)
+            //Todo: log something to the file, but not every job completed
+            int completedTask = Task.WaitAny((from pendingJob in pendingJobs select pendingJob.Value.JobTask).ToArray());
+                        
+            if(jobs.TryGetValue(pendingJobs.ElementAt(completedTask).Value.ID, out Job processedJob) == true)
             {
-                CollectJob(processedJob);
+                Job collectedJob = CollectJob(invokeAll, processedJob, returnAsJobObject, force, appendJobNameToResult);
+                
+                if (!jobs.TryRemove(collectedJob.ID, out Job removedJob) == true)
+                {
+                    LogHelper.LogDebug(string.Format("Unable to remove Job {0}", collectedJob.ID), invokeAll);
+                }
             }
             else
             {
-                LogHelper.Log(fileErrorLogTypes, string.Format("TaskID {0} completed, but wasnt found at Jobs array. Please report this issue", completedTask), this);
+                LogHelper.Log(fileErrorLogTypes, 
+                    string.Format("TaskID {0} completed, but wasnt found at Jobs array. Please report this issue", completedTask), 
+                    invokeAll,
+                    noFileLogging);
             }
         }
 
-        private void CollectJob(Job job)
+        internal static Job CollectJob(PSCmdlet invokeAll, Job job, bool returnAsJobObject, bool force, bool appendJobNameToResult,
+            bool noFileLogging = false)
         {
-            LogHelper.LogDebug(string.Format("Collecting JobID:{0}",job.ID), this);
+            LogHelper.LogDebug(string.Format("Collecting JobID:{0}",job.ID), invokeAll);
             if (job.IsFaulted == true || job.PowerShell.HadErrors == true)
             {
-                if (!Force.IsPresent && job.ID == 1)
+                if (!force && job.ID == 1)
                 {
-                    LogHelper.Log(fileVerboseLogTypes, "There was an error from First job, will stop queueing jobs.", this);
+                    LogHelper.Log(fileVerboseLogTypes, "There was an error from First job, will stop queueing jobs.", invokeAll, noFileLogging);
                     if (job.Exceptions != null)
                     {
                         throw job.Exceptions;
                     }
                     else
                     {
-                        ThrowTerminatingError(job.PowerShell.Streams.Error.FirstOrDefault());
+                        invokeAll.ThrowTerminatingError(job.PowerShell.Streams.Error.FirstOrDefault());
                     }
                 }
                 else
                 {
-                    HandleFaultedJob(job);
+                    HandleFaultedJob(invokeAll, job, returnAsJobObject);
                 }
             }
             else
             {
-                if (ReturnasJobObject.IsPresent)
+                if (returnAsJobObject)
                 {
-                    WriteObject(job);
+                    invokeAll.WriteObject(job);
                 }
                 else
                 {
@@ -142,34 +134,36 @@
                     {
                         foreach(PSObject result in job.JobTask.Result)
                         {
-                            if (AppendJobNameToResult.IsPresent)
+                            if (appendJobNameToResult)
                             {
                                 result.Members.Add(new PSNoteProperty("PSJobName", job.JobName));
                             }
-                            WriteObject(result);
+                            invokeAll.WriteObject(result);
                         }
                     }
                     else
                     {
-                        LogHelper.Log(fileVerboseLogTypes, string.Format("JobID:{0} JobName: {1} has no result to be appened to the output. IsJobCompleted:{2}, IsJobFaulted:{3}", job.ID, job.JobName, job.JobTask.IsCompleted.ToString(), job.IsFaulted.ToString()), this);
+                        LogHelper.Log(fileVerboseLogTypes, 
+                            string.Format("JobID:{0} JobName: {1} has no result to be appened to the output. IsJobCompleted:{2}, IsJobFaulted:{3}", 
+                            job.ID, job.JobName, job.JobTask.IsCompleted.ToString(), job.IsFaulted.ToString()), 
+                            invokeAll,
+                            noFileLogging);
                     }
                 }
                 
-                if (!jobs.TryRemove(job.ID, out Job removedJob) == true)
-                {
-                    LogHelper.LogDebug(string.Format("Unable to remove Job {0}", job.ID), this);
-                }
+                
             }
             job.IsCollected = true;
+            return job;
         }
 
-        private void HandleFaultedJob(Job faultedJob)
+        internal static void HandleFaultedJob(PSCmdlet invokeAll, Job faultedJob, bool returnAsJobObject,
+            bool noFileLogging = false)
         {
-            faultedJobsCount++;
-            LogHelper.Log(fileVerboseLogTypes, string.Format("Job: {0} is faulted.", faultedJob.ID), this);
-            if (ReturnasJobObject.IsPresent == true)
+            LogHelper.Log(fileVerboseLogTypes, string.Format("Job: {0} is faulted.", faultedJob.ID), invokeAll, noFileLogging);
+            if (returnAsJobObject)
             {
-                WriteObject(faultedJob);
+                invokeAll.WriteObject(faultedJob);
             }
             else
             {
@@ -179,11 +173,11 @@
                     {
                         if (e is RemoteException re)
                         {
-                            LogHelper.Log(fileErrorLogTypes, re.ErrorRecord, this);
+                            LogHelper.Log(fileErrorLogTypes, re.ErrorRecord, invokeAll, noFileLogging);
                         }
                         else
                         {
-                            LogHelper.Log(fileErrorLogTypes, ((ActionPreferenceStopException)e).ErrorRecord, this);
+                            LogHelper.Log(fileErrorLogTypes, ((ActionPreferenceStopException)e).ErrorRecord, invokeAll, noFileLogging);
                         }
                     }
                 }
@@ -192,7 +186,7 @@
                 {
                     foreach (ErrorRecord errorRecord in faultedJob.PowerShell.Streams.Error)
                     {
-                        LogHelper.Log(fileErrorLogTypes, errorRecord, this);
+                        LogHelper.Log(fileErrorLogTypes, errorRecord, invokeAll, noFileLogging);
                     }
                 }
             }

@@ -17,23 +17,27 @@
             HostDebug,
             All
         }
+       
+        internal static LogTarget[] fileVerboseLogTypes = { LogTarget.File, LogTarget.HostVerbose};
+        internal static LogTarget[] fileWarningLogTypes = { LogTarget.File, LogTarget.HostWarning };
+        internal static LogTarget[] fileErrorLogTypes =  { LogTarget.File, LogTarget.HostError };
+        internal static LogTarget[] debugLogTypes =  { LogTarget.HostDebug };
 
         internal static class LogHelper
         {
             static readonly string datetimeFormat = "yyyyMMddTHHmmss";
-            public static string logFile = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location) + 
-                "\\Iv" + System.DateTime.Now.ToString(datetimeFormat) + ".log";
+            public static string logFile = Path.Combine(Path.GetTempPath(),"Iv" + System.DateTime.Now.ToString(datetimeFormat) + ".log");
             const string progressStr = "Executing Jobs";
 
-            internal static void Log<T>(List<LogTarget> target, T message, InvokeAll invokeAllInstance)
+            internal static void Log<T>(LogTarget[] target, T message, PSCmdlet invokeAllInstance, bool noFileLogging = false)
             {
                 foreach (LogTarget lT in target)
                 {
-                    Log(message, lT, invokeAllInstance);
+                    Log(message, lT, invokeAllInstance, noFileLogging);
                 }
 
             }
-            internal static void LogDebug(List<string> debugStrs, InvokeAll invokeAllinstance)
+            internal static void LogDebug(List<string> debugStrs, PSCmdlet invokeAllinstance)
             {
                 foreach (string debugEntry in debugStrs)
                 {
@@ -41,11 +45,11 @@
                 }
             }
 
-            internal static void LogDebug(string debugStr, InvokeAll invokeAllinstance)
+            internal static void LogDebug(string debugStr, PSCmdlet invokeAllinstance)
             {
                 LogDebug(new List<string>() { debugStr }, invokeAllinstance);
             }
-            public static void Log<T>(T message, LogTarget logTarget, InvokeAll invokeAll)
+            public static void Log<T>(T message, LogTarget logTarget, PSCmdlet invokeAll, bool noFileLogging = false)
             {
                 string messageStr = null;
                 if (message is ErrorRecord)
@@ -61,7 +65,7 @@
                 switch (logTarget)
                 {
                     case LogTarget.File:
-                        if (!invokeAll.NoFileLogging.IsPresent)
+                        if (!noFileLogging)
                         {
                             using (StreamWriter streamWriter = new StreamWriter(logFile, append: true))
                             {
@@ -91,9 +95,9 @@
                 }
             }
 
-            internal static void LogProgress(string currentOperation, InvokeAll invokeAll, string statusStr = progressStr, int percentComplete = -1)
+            internal static void LogProgress(string currentOperation, PSCmdlet invokeAll, string statusStr = progressStr, int percentComplete = -1, bool quiet = false)
             {
-                if (invokeAll.Quiet.IsPresent)
+                if (quiet)
                 {
                     return;
                 }
