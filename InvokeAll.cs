@@ -73,7 +73,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
         public string ProgressBarStage { get; set; } = "Waiting on Jobs to complete";
 
         [Parameter(Mandatory = false,
-            HelpMessage = "When specified, job Objects are created and returned immediately. Use Check-InvokeAllJobs or Receive-InvokeAllJobs to check and collect the results")]
+            HelpMessage = "When specified, job Objects are created and returned immediately. Jobs will continue to run in the background, Use Get-InvokeAllJobsStatus and Receive-InvokeAllJobs to check and collect the results.")]
         public SwitchParameter Async;
 
         [Parameter(Mandatory = false,
