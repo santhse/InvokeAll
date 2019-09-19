@@ -44,7 +44,8 @@ namespace PSParallel
             {
                 LogHelper.Log(fileVerboseLogTypes, "In EndProcessing", this);
                 int totalJobs = jobs.Count;
-                
+                LogHelper.Log(fileVerboseLogTypes, string.Format("Number of Jobs that will be collected: {0}", totalJobs), this);
+
                 //Collect the last batch of jobs
                 while (jobs.Values.Where(j => j.IsCollected != true).Count() > 0)
                 {

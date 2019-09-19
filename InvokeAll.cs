@@ -159,6 +159,14 @@ You cannot use alias or external scripts. If you are using a function from a cus
             }
             LogHelper.LogProgress("Starting script", this, quiet:Quiet.IsPresent);
 
+            if (Async.IsPresent)
+            {
+                LogHelper.Log(fileWarningLogTypes, "Async switch is used, Use Get-InvokeAllJobsStatus to check the job status and Receive-InvokeAllJobs to collect the results", this, NoFileLogging.IsPresent);
+                LogHelper.Log(fileWarningLogTypes, 
+                    "No Error check done when Async switch is used. If additional PS modules are required to run the command, please specify them using -ModulestoLoad switch", 
+                    this, NoFileLogging.IsPresent);
+            }
+
             if (BatchSize < MaxThreads)
             {
                 //TODo: Log warning not error
@@ -192,7 +200,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     throw new Exception(notSupportedErrorString);
                 }
                 
-                proxyFunction = RunspaceMethods.CreateProxyFunction(cmdInfo, out debugStrings);
+                proxyFunction = RunspaceMethods.CreateProxyFunction(cmdInfo, debugStrings);
                 LogHelper.LogDebug(debugStrings, this);
                 if (proxyFunction == null)
                 {
@@ -303,89 +311,140 @@ You cannot use alias or external scripts. If you are using a function from a cus
         int jobNum = 0;
         /// <summary>
         /// Create powershell instance for each Job and run it on Ruspacepool.
-        /// Use Tasks to create threads and collect the results 
+        /// Use Tasks to create threads and collect the results.
+        /// If Force parameter is not used and first Job, perform Error check before Queuing remaining Jobs
         /// </summary>
         protected override void ProcessRecord()
         {
             try
             {
                 jobNum++;
-
-                //Create a powershell instance for each input object and it will be processed on a seperate thread
-                PowerShell powerShell = PowerShell.Create();
-                IDictionary psParams = RunspaceMethods.FindParams(proxyFunction, ScriptToRun, commandName, InputObject);
                 
-                //If command supplied doesn't take any input, bail out.
-                //This check can be removed if this cmdlet needs to run 'something' in parallel, but just didn't find a use case yet
-                if (psParams.Count <= 0)
+                do
                 {
-                    throw new Exception("No Parameters were used on the command, Please verify the command.");
-                }
-
-                if (jobNum == 1)
-                {
-                    LogHelper.LogProgress("Queuing First Job", this, quiet:Quiet.IsPresent);
-                    LogHelper.Log(fileVerboseLogTypes, "Paramaters used for the first job:", this, NoFileLogging.IsPresent);
-                    foreach (DictionaryEntry param in psParams)
+                    try
                     {
-                        string paramValues = null;
-                        if (param.Value is Array)
+                        //Create a powershell instance for each input object and it will be processed on a seperate thread
+                        PowerShell powerShell = PowerShell.Create();
+                        IDictionary psParams = RunspaceMethods.FindParams(proxyFunction, ScriptToRun, commandName, InputObject);
+                
+                        //If command supplied doesn't take any input, bail out.
+                        //This check can be removed if this cmdlet needs to run 'something' in parallel, but just didn't find a use case yet
+                        if (psParams.Count <= 0)
                         {
-                            foreach (var val in param.Value as Array)
+                            throw new Exception("No Parameters were used on the command, Please verify the command.");
+                        }
+
+                        if (jobNum == 1)
+                        {
+                            LogHelper.LogProgress("Queuing First Job", this, quiet:Quiet.IsPresent);
+                            LogHelper.Log(fileVerboseLogTypes, "Paramaters used for the first job:", this, NoFileLogging.IsPresent);
+                            foreach (DictionaryEntry param in psParams)
                             {
-                                paramValues += val?.ToString() + ", ";
+                                string paramValues = null;
+                                if (param.Value is Array)
+                                {
+                                    foreach (var val in param.Value as Array)
+                                    {
+                                        paramValues += val?.ToString() + ", ";
+                                    }
+                                }
+                                else
+                                {
+                                    paramValues = param.Value?.ToString();
+                                }
+                                LogHelper.Log(fileVerboseLogTypes, string.Format("{0} - {1}", param.Key.ToString(), paramValues), this, NoFileLogging.IsPresent);
                             }
+                        }
+
+                        if (cmdInfo.CommandType == CommandTypes.ExternalScript)
+                        {
+                            powerShell.AddScript(((ExternalScriptInfo)cmdInfo).ScriptContents).AddParameters(psParams);
                         }
                         else
                         {
-                            paramValues = param.Value?.ToString();
+                            powerShell.AddCommand(commandName).AddParameters(psParams);
                         }
-                        LogHelper.Log(fileVerboseLogTypes, string.Format("{0} - {1}", param.Key.ToString(), paramValues), this, NoFileLogging.IsPresent);
+                        
+                        powerShell.RunspacePool = runspacePool;
+                        //Creates the task and the continuation tasks
+                        Task<PSDataCollection<PSObject>> task = Task<PSDataCollection<PSObject>>.Factory.FromAsync(powerShell.BeginInvoke(), r => powerShell.EndInvoke(r));
+
+                        task.ContinueWith(t =>
+                        {
+                            var currentJob = CheckandCreateJob(
+                                jobName: InputObject.ToString(),
+                                task: t,
+                                jobID: jobNum,
+                                ps: powerShell);
+                            currentJob.IsFaulted = true;
+                            currentJob.Exceptions = t.Exception;
+                        }, TaskContinuationOptions.OnlyOnFaulted);
+
+                        //Continuation tasks may have already created the Job, check before creating it.
+                        Job job = CheckandCreateJob(
+                                jobName: InputObject.ToString(),
+                                task: task,
+                                jobID: jobNum,
+                                ps: powerShell);
+
+                        if (!jobs.TryAdd(job.ID, job))
+                        {
+                            if (jobNum == 1)
+                            {
+                                //We might retry the Job 1 during Error Check, so ignore the error and replace the first job
+                                jobs.TryRemove(jobs.First().Key, out Job removedJob);
+                                jobs.TryAdd(job.ID, job);
+                            }
+                            else
+                            {
+                                throw new Exception(string.Format("Unable to add job ID: {0}", job.ID));
+                            }
+                        }
+
+                        if (!Async.IsPresent
+                                && (jobs.Count == BatchSize || (!this.Force.IsPresent && (jobNum == 1))))
+                        {
+                            CollectJobs(this, jobs, jobNum, ProgressBarStage, Force, ReturnasJobObject, AppendJobNameToResult, jobNum);
+                        }
+
+                        if (Async.IsPresent)
+                        {
+                            WriteObject(job);
+                        }
+
                     }
-                }
+                    catch (AggregateException ae) when (jobNum == 1 && ae.InnerExceptions.Where(ie => ie is CommandNotFoundException).Count() > 0)
+                    {
+                        IEnumerable<Exception> exceptions = ae.InnerExceptions.Where(ie => ie is CommandNotFoundException);
+                        List<string> debugStrings = new List<string>();
+                        foreach(Exception exception in exceptions)
+                        {
+                            CommandInfo commandInfo = RunspaceMethods.GetCommandInfo(((CommandNotFoundException)exception).CommandName);
+                            if (commandInfo == null)
+                            {
+                                throw (CommandNotFoundException)exception;
+                            }
 
-                if (cmdInfo.CommandType == CommandTypes.ExternalScript)
-                {
-                    powerShell.AddScript(((ExternalScriptInfo)cmdInfo).ScriptContents).AddParameters(psParams);
-                }
-                else
-                {
-                    powerShell.AddCommand(commandName).AddParameters(psParams);
-                }
+                            RunspaceMethods.ModuleDetails moduleDetails = RunspaceMethods.GetModuleDetails(commandInfo, debugStrings);
+                            LogHelper.LogDebug(debugStrings, this);
+                            LogHelper.Log(fileVerboseLogTypes, exception.Message, this, NoFileLogging);
 
-                powerShell.RunspacePool = runspacePool;
+                            if (moduleDetails.IsFromRemotingModule)
+                            {
+                                LogHelper.Log(fileVerboseLogTypes, "The command is from a remotePS connection, cannot load local and remote runspaces together", this, NoFileLogging);
+                                throw exception;
+                            }
 
-                //Creates the task and the continuation tasks
-                Task<PSDataCollection<PSObject>> task = Task<PSDataCollection<PSObject>>.Factory.FromAsync(powerShell.BeginInvoke(), r => powerShell.EndInvoke(r));
-                
-                task.ContinueWith(t =>
-                {
-                    var currentJob = CheckandCreateJob(
-                        jobName: InputObject.ToString(),
-                        task: t,
-                        jobID: jobNum,
-                        ps: powerShell);
-                    currentJob.IsFaulted = true;
-                    currentJob.Exceptions = t.Exception;
-                }, TaskContinuationOptions.OnlyOnFaulted);
+                            RunspaceMethods.LoadISSWithModuleDetails(moduleDetails, runspacePool.InitialSessionState);
+                        }
+                        runspacePool = RunspaceMethods.ResetRunspacePool(1, MaxThreads, runspacePool.InitialSessionState.Clone(), new DummyCustomPSHost());
+                        LogHelper.LogDebug("Resetting Runspace to load the new modules", this);
+                        LogHelper.Log(fileVerboseLogTypes, "Retrying first job", this, NoFileLogging);
+                        runspacePool.Open();
+                    }
 
-                //Continuation tasks may have already created the Job, check before creating it.
-                Job job = CheckandCreateJob(
-                        jobName: InputObject.ToString(),
-                        task: task,
-                        jobID: jobNum,
-                        ps: powerShell);
-
-                if (!jobs.TryAdd(job.ID, job))
-                {
-                    throw new Exception(string.Format("Unable to add job ID: {0}", job.ID));
-                }
-                
-                if (!Async.IsPresent
-                    && (jobs.Count == BatchSize || (!this.Force.IsPresent && (jobNum == 1))))
-                {
-                    CollectJobs(this, jobs, jobNum, ProgressBarStage, Force, ReturnasJobObject, AppendJobNameToResult, jobNum);
-                }
+                } while (!Force.IsPresent && jobNum == 1 && jobs.FirstOrDefault().Value?.IsFaulted == true);
 
                 if (!Force.IsPresent && 
                     (jobs.Values.Where(f => f.IsFaulted == true).Count() / jobNum * 100) > promptOnPercentFaults)
@@ -396,11 +455,6 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     }
                 }
 
-                if (Async.IsPresent)
-                {
-                    WriteObject(job);
-                }
-                
             }
             catch (Exception e)
             {

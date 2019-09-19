@@ -8,7 +8,8 @@
     using System.Collections.Concurrent;
     using static PSParallel.Logger;
     using Job = InvokeAll.Job;
-    
+    using System.Collections.Generic;
+
     internal static class CollectAndCleanUpMethods
     {
         internal static void CleanupObjs(PSCmdlet invokeAll, FunctionInfo proxyFunctionInfo, RunspacePool runspacePool, bool isFromPipelineStoppedException, 
@@ -38,7 +39,7 @@
         {
             if (!force && jobID == 1)
             {
-                LogHelper.LogProgress("Error check: Waiting 30 seconds for the first job to complete", invokeAll, quiet:quiet);
+                LogHelper.LogProgress("Waiting 30 seconds for the first job to complete", invokeAll, "Error Check", quiet:quiet);
                 
                 //For the first job, default the wait to 30 sceonds and do a error check, if it is not completed, prompt user with option to wait or to continue..
                 if ((bool)jobs.First().Value.JobTask.Wait(TimeSpan.FromSeconds(30)))
@@ -62,6 +63,8 @@
                         throw new Exception("Aborted from the first instance error check");
                     }
                 }
+
+                LogHelper.LogProgress("Completed", invokeAll, "Error Check", 100, quiet: quiet);
             }
 
             var pendingJobs = jobs.Where(q => q.Value.IsCollected != true);
@@ -107,6 +110,7 @@
             {
                 if (!force && job.ID == 1)
                 {
+                    job.IsFaulted = true;
                     LogHelper.Log(fileVerboseLogTypes, "There was an error from First job, will stop queueing jobs.", invokeAll, noFileLogging);
                     if (job.Exceptions != null)
                     {
@@ -114,7 +118,12 @@
                     }
                     else
                     {
-                        invokeAll.ThrowTerminatingError(job.PowerShell.Streams.Error.FirstOrDefault());
+                        List<Exception> jobExceptions = new List<Exception>();
+                        foreach (ErrorRecord errorRecord in job.PowerShell.Streams.Error)
+                        {
+                            jobExceptions.Add(errorRecord.Exception);
+                        }
+                        throw new AggregateException(jobExceptions);
                     }
                 }
                 else

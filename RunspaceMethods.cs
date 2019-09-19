@@ -13,6 +13,23 @@
 
     internal static class RunspaceMethods
     {
+        public class ModuleDetails
+        {
+            public ModuleDetails()
+            {
+                CommandStr = string.Empty;
+                PSModule = string.Empty;
+                PSSnapIn = string.Empty;
+                Functions = new List<SessionStateFunctionEntry>();
+                IsFromRemotingModule = false;
+            }
+
+            public string CommandStr { get; set; }
+            public string PSModule { get; set; }
+            public string PSSnapIn { get; set; }
+            public List<SessionStateFunctionEntry> Functions { get; set; }
+            public bool IsFromRemotingModule { get; set; }
+        }
         /// <summary>
         /// Run Get-Command for the passed command on the current powershell instance to discover the CommandInfo
         /// </summary>
@@ -26,12 +43,92 @@
             if (cmdAsts?.FirstOrDefault() is CommandAst cmdElement)
             {
                 cmd = cmdElement.CommandElements.First().ToString();
-                var cmdScript = ScriptBlock.Create("Get-Command " + cmd + " | Select-Object -First 1");
-                PSObject cmdDetails = (PSObject)cmdScript.InvokeReturnAsIs();
-                return cmdDetails.BaseObject as CommandInfo;
+                return GetCommandInfo(cmd);
             }
             cmd = "unknown";
             return null;
+        }
+
+        internal static void LoadISSWithModuleDetails(ModuleDetails moduleDetails, InitialSessionState iss)
+        {
+            PSSnapInException pSSnapInException = new PSSnapInException();
+            if (moduleDetails.Functions.Count > 0)
+            {
+                iss.Commands.Add(moduleDetails.Functions.FirstOrDefault());
+            }
+            if (moduleDetails.PSModule.Length > 0)
+            {
+                iss.ImportPSModule(new string[] { moduleDetails.PSModule });
+            }
+            if (moduleDetails.PSSnapIn.Length > 0)
+            {
+                iss.ImportPSSnapIn(moduleDetails.PSSnapIn, out pSSnapInException);
+            }
+
+        }
+
+        internal static CommandInfo GetCommandInfo(string cmd)
+        {
+            //there could be scope used, trim it before checking, eg: global:myglobalfunction
+            cmd = cmd.Split(':').Last();
+            var cmdScript = ScriptBlock.Create("Get-Command " + cmd + " | Select-Object -First 1");
+            PSObject cmdDetails = (PSObject)cmdScript.InvokeReturnAsIs();
+            return cmdDetails?.BaseObject as CommandInfo;
+        }
+
+        internal static ModuleDetails GetModuleDetails(CommandInfo commandInfo, List<string> debugStrings)
+        {
+            ModuleDetails moduleDetails = new ModuleDetails();
+            switch (commandInfo.CommandType)
+            {
+                case CommandTypes.Cmdlet:
+                    CmdletInfo cmdletInfo = commandInfo as CmdletInfo;
+                    if (cmdletInfo.Module != null)
+                    {
+                        debugStrings.Add(string.Format("The command {0} is from Module {1}", commandInfo.Name, cmdletInfo.ModuleName));
+                        moduleDetails.PSModule = cmdletInfo.ModuleName;
+                    }
+                    if (cmdletInfo.PSSnapIn != null)
+                    {
+                        debugStrings.Add(string.Format("The command {0} is from PSSnapin {1}", commandInfo.Name, cmdletInfo.PSSnapIn.Name));
+                        moduleDetails.PSSnapIn = cmdletInfo.PSSnapIn.Name;
+                    }
+
+                    break;
+                case CommandTypes.Function:
+                    FunctionInfo functionInfo = commandInfo as FunctionInfo;
+                    if (functionInfo != null)
+                    {
+                        //Add the function definition anyway as the function can be local or from a module/file
+                        moduleDetails.Functions.Add(new SessionStateFunctionEntry(functionInfo.Name, functionInfo.Definition));
+                        if (functionInfo.ScriptBlock.File != null)
+                        {
+                            debugStrings.Add(string.Format("The command is a custom function {0} from file {1}", commandInfo.Name, functionInfo.ScriptBlock.File));
+                            FileInfo scriptFileInfo = new FileInfo(functionInfo.ScriptBlock.File);
+
+                            //if the function is from a PS1 script, don't load it as a module. The script will be executed and will cause unintended results
+                            if (!scriptFileInfo.Extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
+                            {
+                                moduleDetails.PSModule = functionInfo.ScriptBlock.File;
+                            }
+                        }
+                    }
+                    break;
+                case CommandTypes.ExternalScript:
+                    debugStrings.Add(string.Format("The command {0} is of type ExternalScript", commandInfo.Name));
+                    break;
+                default:
+                    break;
+            }
+
+            Hashtable modulePrivatedata = commandInfo.Module?.PrivateData as Hashtable;
+
+            //special handling for remote PSsession commands
+            if (modulePrivatedata != null && modulePrivatedata.ContainsKey("ImplicitRemoting"))
+            {
+                moduleDetails.IsFromRemotingModule = true;
+            }
+            return moduleDetails;
         }
 
         /// <summary>
@@ -40,9 +137,8 @@
         /// <param name="commandInfo"></param>
         /// <param name="debugStrings"></param>
         /// <returns></returns>
-        internal static FunctionInfo CreateProxyFunction(CommandInfo commandInfo, out List<string> debugStrings)
+        internal static FunctionInfo CreateProxyFunction(CommandInfo commandInfo, List<string> debugStrings)
         {
-            debugStrings = new List<string>();
             string proxyCommandName = null;
             string proxyCommand = ProxyCommand.Create(new CommandMetadata(commandInfo));
             ScriptBlock proxyScript = ScriptBlock.Create(proxyCommand);
@@ -109,9 +205,11 @@
             debugStrings = new List<string>();
             RunspaceConnectionInfo runspaceConnectionInfo = null;
             Hashtable modulePrivatedata = commandInfo.Module?.PrivateData as Hashtable;
-            
+
+            ModuleDetails moduleDetails = GetModuleDetails(commandInfo, debugStrings);
+
             //special handling for remote PSsession commands
-            if ((modulePrivatedata != null && modulePrivatedata.ContainsKey("ImplicitRemoting")) || useRemotePS != null)
+            if (moduleDetails.IsFromRemotingModule || useRemotePS != null)
             {
                 if (useRemotePS != null)
                 {
@@ -183,48 +281,10 @@
                 snapInsToLoad.AddRange(snapIns);
             }
 
-            switch (commandInfo.CommandType)
-            {
-                case CommandTypes.Cmdlet:
-                    CmdletInfo cmdletInfo = commandInfo as CmdletInfo;
-                    if(cmdletInfo.Module != null)
-                    {
-                        debugStrings.Add(string.Format("The command {0} is from Module {1}", commandInfo.Name, cmdletInfo.ModuleName));
-                        modulesToLoad.Add(cmdletInfo.ModuleName);
-                    }
-                    if (cmdletInfo.PSSnapIn != null)
-                    {
-                        debugStrings.Add(string.Format("The command {0} is from PSSnapin {1}", commandInfo.Name, cmdletInfo.PSSnapIn.Name));
-                        snapInsToLoad.Add(cmdletInfo.PSSnapIn.Name);
-                    }
-                    
-                    break;
-                case CommandTypes.Function:
-                    FunctionInfo functionInfo = commandInfo as FunctionInfo;
-                    if (functionInfo != null)
-                    {
-                        //Add the function definition anyway as the function can be local or from a module/file
-                        iss.Commands.Add(new SessionStateFunctionEntry(functionInfo.Name, functionInfo.Definition));
-                        if (functionInfo.ScriptBlock.File != null)
-                        {
-                            debugStrings.Add(string.Format("The command is a custom function {0} from file {1}", commandInfo.Name, functionInfo.ScriptBlock.File));
-                            FileInfo scriptFileInfo = new FileInfo(functionInfo.ScriptBlock.File);
-                            
-                            //if the function is from a PS1 script, don't load it as a module. The script will be executed and will cause unintended results
-                            if (!scriptFileInfo.Extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
-                            {
-                                modulesToLoad.Add(functionInfo.ScriptBlock.File);
-                            }
-                        }
-                    }
-                    break;
-                case CommandTypes.ExternalScript:
-                    debugStrings.Add(string.Format("The command {0} is of type ExternalScript", commandInfo.Name));
-                    break;
-                default:
-                    break;
-            }
+            //Populate ISS with the snapins and modules from the moduleDetails
+            LoadISSWithModuleDetails(moduleDetails, iss);
 
+            //Load user specified snapins and modules
             if (modules?.Count() > 0 && modules.Contains("All", StringComparer.OrdinalIgnoreCase))
             {
                 var modulesAvailable = ScriptBlock.Create("Get-Module -ListAvailable | Select-Object -ExpandProperty Name").Invoke();
@@ -248,6 +308,11 @@
                 iss.Variables.Add(variableEntries);
 
             return RunspaceFactory.CreateRunspacePool(1, maxRunspaces, iss, pSHost);
+        }
+
+        internal static RunspacePool ResetRunspacePool(int minRunspaces, int maxRunspaces, InitialSessionState initialSessionState, PSHost pSHost)
+        {
+            return RunspaceFactory.CreateRunspacePool(minRunspaces, maxRunspaces, initialSessionState, pSHost);
         }
 
         /// <summary>
