@@ -17,6 +17,11 @@
     internal static class RunspaceMethods
     {
         /// <summary>
+        /// Command types that are supported by this script
+        /// </summary>
+        private static CommandTypes[] supportedCommandTypes = { CommandTypes.ExternalScript, CommandTypes.Cmdlet, CommandTypes.Function, CommandTypes.Alias };
+
+        /// <summary>
         /// Run Get-Command for the passed command on the current powershell instance to discover the CommandInfo
         /// </summary>
         /// <param name="scriptBlock">Entire command string passed to mulithread</param>
@@ -34,6 +39,62 @@
 
             cmd = "unknown";
             return null;
+        }
+
+        /// <summary>
+        /// Validate if the command passed can be used for multithreading
+        /// </summary>
+        /// <param name="commandInfo">CommandInfo object from the CmdDiscovery function</param>
+        /// <param name="commandName">command Name returned from CmdDiscovery function</param>
+        internal static void ValidateCmdInfo(CommandInfo commandInfo, string commandName)
+        {
+            if (commandInfo == null)
+            {
+                throw new Exception("Unable to find the command specified to Invoke, please make sure required modules or functions are loaded to the Powershell host");
+            }
+
+            if (!supportedCommandTypes.Contains(commandInfo.CommandType))
+            {
+                string notSupportedErrorString = "Invoke-All doesn't implement methods to run this command, Supported types are PSScripts, PSCmdlets and PSFunctions";
+                throw new Exception($"The supplied command {commandName} is of type {commandInfo.CommandType.ToString()}. {notSupportedErrorString}");
+            }
+        }
+
+        /// <summary>
+        /// Runs Get-Variable on the powershell host and returns the variables found
+        /// </summary>
+        /// <returns>Variables found on the Host</returns>
+        internal static IList<SessionStateVariableEntry> GetSessionStateVariables()
+        {
+            IList<SessionStateVariableEntry> stateVariableEntries = new List<SessionStateVariableEntry>();
+            string psGetUDVariables = @"
+                        function Get-UDVariable {
+                          get-variable | where-object {(@(
+                            'FormatEnumerationLimit',
+                            'MaximumAliasCount',
+                            'MaximumDriveCount',
+                            'MaximumErrorCount',
+                            'MaximumFunctionCount',
+                            'MaximumVariableCount',
+                            'PGHome',
+                            'PGSE',
+                            'PGUICulture',
+                            'PGVersionTable',
+                            'PROFILE',
+                            'PSSessionOption'
+                            ) -notcontains $_.name) -and `
+                            (([psobject].Assembly.GetType('System.Management.Automation.SpecialVariables').GetFields('NonPublic,Static') `
+                            | Where-Object FieldType -eq ([string]) | ForEach-Object GetValue $null)) -notcontains $_.name
+                          }
+                        }
+
+                        Get-UDVariable
+
+                        ";
+
+            IEnumerable<PSVariable> variables = ScriptBlock.Create(psGetUDVariables).Invoke().Select(v => v.BaseObject as PSVariable);
+            variables.ToList().ForEach(v => stateVariableEntries.Add(new SessionStateVariableEntry(v.Name, v.Value, null)));
+            return stateVariableEntries;
         }
 
         /// <summary>
@@ -216,6 +277,7 @@
             debugStrings = new List<string>();
             RunspaceConnectionInfo runspaceConnectionInfo = null;
             Hashtable modulePrivatedata = commandInfo.Module?.PrivateData as Hashtable;
+            RunspacePool runspacePool = null;
 
             ModuleDetails moduleDetails = GetModuleDetails(commandInfo, debugStrings);
 
@@ -277,7 +339,10 @@
                     }
                 }
 
-                return RunspaceFactory.CreateRunspacePool(1, Environment.ProcessorCount, runspaceConnectionInfo, pSHost, typeTable);
+                runspacePool = RunspaceFactory.CreateRunspacePool(1, Environment.ProcessorCount, runspaceConnectionInfo, pSHost, typeTable);
+                runspacePool.ThreadOptions = PSThreadOptions.ReuseThread;
+                runspacePool.Open();
+                return runspacePool;
             }
 
             InitialSessionState iss = InitialSessionState.CreateDefault2();
@@ -324,7 +389,10 @@
                 iss.Variables.Add(variableEntries);
             }
 
-            return RunspaceFactory.CreateRunspacePool(1, maxRunspaces, iss, pSHost);
+            runspacePool = RunspaceFactory.CreateRunspacePool(1, maxRunspaces, iss, pSHost);
+            runspacePool.ThreadOptions = PSThreadOptions.ReuseThread;
+            runspacePool.Open();
+            return runspacePool;
         }
 
         /// <summary>

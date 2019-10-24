@@ -36,11 +36,6 @@
         private CommandInfo cmdInfo = null;
 
         /// <summary>
-        /// Command types that are supported by this script
-        /// </summary>
-        private CommandTypes[] supportedCommandTypes = { CommandTypes.ExternalScript, CommandTypes.Cmdlet, CommandTypes.Function, CommandTypes.Alias };
-
-        /// <summary>
         /// If 90% of the Jobs are failed already, prompt if the rest of the jobs should be queued
         /// </summary>
         private int promptOnPercentFaults = 90;
@@ -64,6 +59,11 @@
         /// Parameter Set Default
         /// </summary>
         private const string ModuleParameterSetName = "Default";
+
+        /// <summary>
+        /// Parameter Set Default
+        /// </summary>
+        private const string ReUseRunspaceParameterSetName = "ReUseRunspace";
 
         /// <summary>
         /// Scriptblock to execute in parallel.
@@ -128,7 +128,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
         /// </summary>
         [Parameter(Mandatory = false, ParameterSetName = RemotePSParameterSetName,
             HelpMessage = "When specified, Remote Runspace opened on the host will be used")]
-        public PSObject UseRemotePSSession { get; set; }
+        public PSObject RemotePSSessionToUse { get; set; }
 
         /// <summary>
         /// To deserialize the objects from RemotePowershell session, load all the typedata from the local session to remote.
@@ -138,6 +138,14 @@ You cannot use alias or external scripts. If you are using a function from a cus
             HelpMessage = "When specified, The typedata is not loaded in to the RunspacePool, Specify if loading typedata is delaying the creation of RunspacePool")]
         public SwitchParameter LoadAllTypeDatas { get; set; }
 
+        /// <summary>
+        /// This is useful when using Invoke-All on a script that uses the same Runspacepool settings throughout
+        /// Re-using the RunspacePool will save time that is spent on creating the Runspacepool
+        /// </summary>
+        [Parameter(Mandatory = false, ParameterSetName = ReUseRunspaceParameterSetName,
+            HelpMessage = "Run New-InvokeAllRunspacepool and use the Output object on this parameter.")]
+        public RunspacePool RunspaceToUse { get; set; }
+        
         /// <summary>
         /// Specifiy a meaning full message to show the progress, something like, "Collecting eventlogs from Servers"
         /// </summary>
@@ -200,6 +208,11 @@ You cannot use alias or external scripts. If you are using a function from a cus
         private RunspacePool RunspacePool { get; set; } = null;
 
         /// <summary>
+        /// Runspacepool to create threads
+        /// </summary>
+        private bool ReuseRunspacePool { get; set; } = false;
+
+        /// <summary>
         /// Discover the commad passed and prepare the RunspacePool
         /// </summary>
         protected override void BeginProcessing()
@@ -241,27 +254,15 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     NoFileLogging.IsPresent);
             }
 
+            ReuseRunspacePool = this.ParameterSetName == ReUseRunspaceParameterSetName ? true : false;
+
             try
             {
                 LogHelper.Log(FileVerboseLogTypes, "Starting script", this, NoFileLogging.IsPresent);
                 LogHelper.Log(FileVerboseLogTypes, MyInvocation.Line, this, NoFileLogging.IsPresent);
                 cmdInfo = RunspaceMethods.CmdDiscovery(ScriptToRun, out commandName);
 
-                if (cmdInfo == null)
-                {
-                    throw new Exception("Unable to find the command specified to Invoke, please make sure required modules or functions are loaded to PS Session");
-                }
-
-                if (supportedCommandTypes.Contains(cmdInfo.CommandType))
-                {
-                    LogHelper.Log(FileVerboseLogTypes, $"The supplied command {commandName} is of type {cmdInfo.CommandType.ToString()}", this, NoFileLogging.IsPresent);
-                }
-                else
-                {
-                    string notSupportedErrorString = "Invoke-All doesn't implement methods to run this command, Supported types are PSScripts, PSCmdlets and PSFunctions";
-                    LogHelper.Log(FileVerboseLogTypes, notSupportedErrorString, this, NoFileLogging.IsPresent);
-                    throw new Exception(notSupportedErrorString);
-                }
+                RunspaceMethods.ValidateCmdInfo(cmdInfo, commandName);
 
                 ProxyFunction = RunspaceMethods.CreateProxyFunction(cmdInfo, debugStrings);
                 LogHelper.LogDebug(debugStrings, this);
@@ -274,60 +275,39 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     LogHelper.Log(FileVerboseLogTypes, $"Created ProxyFunction {ProxyFunction.Name}", this, NoFileLogging.IsPresent);
                 }
 
-                IList<SessionStateVariableEntry> stateVariableEntries = new List<SessionStateVariableEntry>();
-                if (CopyLocalVariables.IsPresent)
+                // If RunspacePool is passed as a parameter, use it, otherwise, Create the RunspacePool
+                if (ReuseRunspacePool)
                 {
-                    string psGetUDVariables = @"
-                        function Get-UDVariable {
-                          get-variable | where-object {(@(
-                            'FormatEnumerationLimit',
-                            'MaximumAliasCount',
-                            'MaximumDriveCount',
-                            'MaximumErrorCount',
-                            'MaximumFunctionCount',
-                            'MaximumVariableCount',
-                            'PGHome',
-                            'PGSE',
-                            'PGUICulture',
-                            'PGVersionTable',
-                            'PROFILE',
-                            'PSSessionOption'
-                            ) -notcontains $_.name) -and `
-                            (([psobject].Assembly.GetType('System.Management.Automation.SpecialVariables').GetFields('NonPublic,Static') `
-                            | Where-Object FieldType -eq ([string]) | ForEach-Object GetValue $null)) -notcontains $_.name
-                          }
-                        }
-
-                        Get-UDVariable
-
-                        ";
-
-                    IEnumerable<PSVariable> variables = ScriptBlock.Create(psGetUDVariables).Invoke().Select(v => v.BaseObject as PSVariable);
-                    variables.ToList().ForEach(v => stateVariableEntries.Add(new SessionStateVariableEntry(v.Name, v.Value, null)));
-                    LogHelper.Log(
-                        FileVerboseLogTypes,
-                        $"Will copy {stateVariableEntries.Count} local variables to the Runspace. Use -debug switch to see the details",
-                        this,
-                        NoFileLogging.IsPresent);
+                    RunspacePool = RunspaceToUse;
                 }
+                else
+                {
+                    IList<SessionStateVariableEntry> stateVariableEntries = new List<SessionStateVariableEntry>();
+                    if (CopyLocalVariables.IsPresent)
+                    {
+                        stateVariableEntries = RunspaceMethods.GetSessionStateVariables();
+                        LogHelper.Log(
+                            FileVerboseLogTypes,
+                            $"Will copy {stateVariableEntries.Count} local variables to the Runspace. Use -debug switch to see the details",
+                            this,
+                            NoFileLogging.IsPresent);
+                    }
 
-                // Create a runspace pool with the cmdInfo collected
-                // Using Dummy PSHost to avoid any messages to the Host. Job will collect all the output on the powershell streams
-                RunspacePool = RunspaceMethods.CreateRunspacePool(
-                    commandInfo: cmdInfo,
-                    pSHost: new DummyCustomPSHost(),
-                    maxRunspaces: MaxThreads,
-                    debugStrings: out debugStrings,
-                    loadAllTypedata: LoadAllTypeDatas.IsPresent,
-                    useRemotePS: (PSSession)UseRemotePSSession?.BaseObject,
-                    modules: ModulestoLoad,
-                    snapIns: PSSnapInsToLoad,
-                    variableEntries: stateVariableEntries);
-
+                    // Create a runspace pool with the cmdInfo collected
+                    // Using Dummy PSHost to avoid any messages to the Host. Job will collect all the output on the powershell streams
+                    RunspacePool = RunspaceMethods.CreateRunspacePool(
+                        commandInfo: cmdInfo,
+                        pSHost: new DummyCustomPSHost(),
+                        maxRunspaces: MaxThreads,
+                        debugStrings: out debugStrings,
+                        loadAllTypedata: LoadAllTypeDatas.IsPresent,
+                        useRemotePS: (PSSession)RemotePSSessionToUse?.BaseObject,
+                        modules: ModulestoLoad,
+                        snapIns: PSSnapInsToLoad,
+                        variableEntries: stateVariableEntries);
+                }
+                
                 LogHelper.LogDebug(debugStrings, this);
-                RunspacePool.ThreadOptions = PSThreadOptions.ReuseThread;
-                RunspacePool.Open();
-                LogHelper.LogDebug("Opened RunspacePool", this);
 
                 // for Logging Purposes, create a powershell instance and log the modules that are *actually* loaded on the runspace
                 if (RunspacePool.ConnectionInfo == null)
@@ -366,7 +346,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                 // Log any debug strings
                 LogHelper.LogDebug(debugStrings, this);
                 LogHelper.Log(FileVerboseLogTypes, error.Exception.ToString(), this, NoFileLogging.IsPresent);
-                CleanupObjs(this, ProxyFunction, RunspacePool, false);
+                CleanupObjs(this, ProxyFunction, RunspacePool, false, false, ReuseRunspacePool);
 
                 ThrowTerminatingError(error);
             }
@@ -470,7 +450,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
 
                         if (!Async.IsPresent && (jobs.ToList().Count == BatchSize || (!this.Force.IsPresent && (jobNum == 1))))
                         {
-                            CollectJobs(this, jobs, jobNum, ProgressBarStage, Force, ReturnasJobObject, AppendJobNameToResult, jobNum);
+                            CollectJobs(this, jobs, jobNum, ProgressBarStage, Force.IsPresent, ReturnasJobObject.IsPresent, AppendJobNameToResult.IsPresent, jobNum);
                         }
 
                         if (Async.IsPresent)
@@ -524,7 +504,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
             {
                 ErrorRecord error = new ErrorRecord(e, e.GetType().Name, ErrorCategory.InvalidData, this);
                 LogHelper.Log(FileVerboseLogTypes, error.Exception.ToString(), this, NoFileLogging.IsPresent);
-                CleanupObjs(this, ProxyFunction, RunspacePool, e is PipelineStoppedException);
+                CleanupObjs(this, ProxyFunction, RunspacePool, e is PipelineStoppedException, false, ReuseRunspacePool);
                 ThrowTerminatingError(error);
             }
         }
@@ -549,7 +529,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                     // Collect the last batch of jobs
                     while (jobs.Where(j => j.Value.IsCollected != true).Count() > 0)
                     {
-                        CollectJobs(this, jobs, jobNum, ProgressBarStage, Force, ReturnasJobObject, AppendJobNameToResult, jobNum);
+                        CollectJobs(this, jobs, jobNum, ProgressBarStage, Force, ReturnasJobObject.IsPresent, AppendJobNameToResult.IsPresent, jobNum);
                     }
 
                     // At this point we will only have the faulted jobs
@@ -569,7 +549,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                 }
                 finally
                 {
-                    CleanupObjs(this, ProxyFunction, RunspacePool, false, false);
+                    CleanupObjs(this, ProxyFunction, RunspacePool, false, false, ReuseRunspacePool);
                 }
             }
         }
@@ -579,7 +559,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
         /// </summary>
         protected override void StopProcessing()
         {
-            CleanupObjs(this, ProxyFunction, RunspacePool, true, false);
+            CleanupObjs(this, ProxyFunction, RunspacePool, true, false, ReuseRunspacePool);
         }
 
         /// <summary>

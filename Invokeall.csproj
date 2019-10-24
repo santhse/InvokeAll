@@ -49,6 +49,7 @@
     <Compile Include="DummyCustomPSHost.cs" />
     <Compile Include="GetInvokeAllJobsStatus.cs" />
     <Compile Include="InvokeAll.cs" />
+    <Compile Include="PrepareRunspacePool.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
     <Compile Include="ReceiveInvokeAllJobs.cs" />
     <Compile Include="RunspaceMethods.cs" />

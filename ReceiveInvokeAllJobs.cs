@@ -114,7 +114,7 @@
                 // Collect the last batch of jobs
                 while (jobs.Where(j => j.Value.IsCollected != true).Count() > 0)
                 {
-                    CollectJobs(this, jobs, totalJobs, "Collecting Jobs", false, ReturnasJobObject, AppendJobNameToResult);
+                    CollectJobs(this, jobs, totalJobs, "Collecting Jobs", true, ReturnasJobObject.IsPresent, AppendJobNameToResult.IsPresent);
                 }
 
                 // At this point we will only have the faulted jobs

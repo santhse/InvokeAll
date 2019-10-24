@@ -24,6 +24,7 @@
         /// <param name="runspacePool">Runsapcepool object</param>
         /// <param name="isFromPipelineStoppedException">When powershell pipeline is stopped, skip removing the proxyfunction</param>
         /// <param name="isAsyncEnd">Is cleanup called with -Async switch specified</param>
+        /// <param name="reuseRunspacePool">when true the Runspacepool is not disposed. User needs to dispose it manually</param>
         /// <param name="noFileLogging">Do not write to Log file</param>
         /// <param name="quiet">Do not show the Powershell progress bar</param>
         internal static void CleanupObjs(
@@ -32,6 +33,7 @@
             RunspacePool runspacePool,
             bool isFromPipelineStoppedException,
             bool isAsyncEnd = false,
+            bool reuseRunspacePool = false,
             bool noFileLogging = false,
             bool quiet = false)
         {
@@ -43,7 +45,7 @@
                 ScriptBlock.Create(@"Remove-Item Function:" + proxyFunctionInfo.Name).Invoke();
             }
 
-            if (!isAsyncEnd && runspacePool != null)
+            if (!reuseRunspacePool && !isAsyncEnd && runspacePool != null)
             {
                 runspacePool.Close();
                 runspacePool.Dispose();
@@ -129,6 +131,7 @@
             {
                 Job collectedJob = CollectJob(invokeAll, processedJob, returnAsJobObject, force, appendJobNameToResult);
 
+                // To Do: Dont remove a faulted job
                 if (!jobs.TryRemove(collectedJob.ID, out Job removedJob) == true)
                 {
                     LogHelper.LogDebug($"Unable to remove Job {collectedJob.ID}", invokeAll);
@@ -249,6 +252,8 @@
                     {
                         LogHelper.Log(FileErrorLogTypes, errorRecord, invokeAll, noFileLogging);
                     }
+
+                    faultedJob.IsFaulted = true;
                 }
             }
         }
