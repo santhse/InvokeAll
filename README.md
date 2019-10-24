@@ -12,6 +12,7 @@ Commands that are exported from the Module:
     Invoke-All
     Get-InvokeAllJobsStatus
     Receive-InvokeAllJobs
+    New-InvokeAllRunspacePool
  
 Examples:
         
@@ -23,76 +24,27 @@ This module also supports async way of running the commands as shown below:
 
 
 
-![InvokeAll-AsyncExample](https://user-images.githubusercontent.com/34683971/64614931-66554280-d3d1-11e9-8d86-7e87011e6189.png)
+![InvokeAll-AsyncExample](https://user-images.githubusercontent.com/34683971/67493378-b3cefb80-f66f-11e9-85ed-30fa1c7df338.png)
 
-Cmdlet: Invoke-All
-PARAMETERS
+Also: Reusing the runspace on a script:
+## Creating the runspace to reuse it.
 
-    -ScriptToRun <scriptblock>
+$runspace = New-InvokeAllRunspacePool -CommandName Get-MRSrequest -LoadAllTypeDatas
 
-        Scriptblock to execute in parallel.
-        Usually it is the 2nd Pipeline block, wrap your command as shown in the below examples and it should work fine.
-        You cannot use alias or external scripts. If you are using a function from a custom script, please make sure it is an Advance function or with Param blocks defined properly.
+    $mailboxStats += $mbx | Invoke-All { Get-MailboxStatistics -Identity "$_.MailboxGuid" -IncludeSoftDeletedRecipients } `
+        -ProgressBarStage "Collecting MailboxStat details for all Mailbox Locations"`
+        -RunspaceToUse $runspace `
+        -BatchSize $locations.Count `
+        -Force
+    $folderStats += $mbx | Invoke-All { Get-MailboxFolderStatistics -Identity $_ -IncludeSoftDeletedRecipients -IncludeOldestAndNewestItems -FolderScope All } `
+        -ProgressBarStage "Collecting Mailbox Folder stats" `
+        -AppendJobNameToResult `
+        -RunspaceToUse $runspace `
+        -BatchSize $locations.Count `
+        -Force | `
+        select @{Name = 'MailboxGuid';e={$_.PSJobName}},*;
 
-    -UseRemotePSSession <psobject>
-        When specified, Remote Runspace opened on the host will be used
+## Removing the Runspace after use
+$runspace.close()
+$runspace.Dispose()
 
-    -Async
-        When specified, job Objects are created and returned immediately. Jobs will continue to run in the background, Use Get-InvokeAllJobsStatus and Receive-InvokeAllJobs to check and collect the results.
-
-    -AppendJobNameToResult
-        When specified, JobName is appended to the result object
-
-    -BatchSize <int>
-        BatchSize controls the number of jobs to run before waiting for one of them to complete
-
-    -CopyLocalVariables
-        Copies the local powershell variable names and its values to the Runspace. DON'T modify or loop through variables on the jobs as they are not thread-safe
-
-    -Force
-        Cmdlet, by default waits for 30 Seconds for the first Job to complete before Queuing rest of the jobs from Pipeline. Use -Force to skip this check
-
-    -InputObject <psobject>
-        Run script against these specified objects. Takes input from Pipeline or when specified explicitly.
-
-    -LoadAllTypeDatas
-        When specified, The typedata is not loaded in to the RunspacePool, Specify if loading typedata is delaying the creation of RunspacePool
-
-    -MaxThreads <int>
-        Number of threads to be executed in parallel, by default one thread per logical CPU
-
-    -ModulestoLoad <string[]>
-        Name of PS Modules or the Full path of the Modules (comma seperated) to load in to the Runspace for the command to work. Specifiy 'All' to load all the possible modules or 'Loaded' to load the currently loaded modules
-
-    -NoFileLogging
-        Specifiy this switch if Logging to a file should be skipped
-
-    -PSSnapInsToLoad <string[]>
-        Name of PSSnapins (comma seperated) to load in to the Runspace for the command to work.
-
-    -ProgressBarStage <string>
-        Provide any useful message to indicate the stage to the user
-
-    -Quiet
-        When specified, the Progress bar is not shown
-
-    -ReturnasJobObject
-        When specified, instead of returing the Job results, returns the invokeall Job objects itself. It is useful when you want to access the Streams or other details of each job
-
-
-
-Cmdlet:Receive-InvokeAllJobs
-
-PARAMETERS
-
-    -AppendJobNameToResult
-        When specified, JobName is appended to the result object
-
-    -JobObjects <InvokeAll+Job[]>
-        PSParallel Job objects returned from Invoke-All -ASync Switch
-
-    -ReturnasJobObject
-        When specified, instead of returing the Job results, returns the invokeall Job objects itself. It is useful when you want to access the Streams or other details of each job
-
-    -Wait
-        Wait for all Jobs to complete and receive the Output
