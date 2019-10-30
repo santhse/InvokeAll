@@ -13,6 +13,21 @@ Commands that are exported from the Module:
     Get-InvokeAllJobsStatus
     Receive-InvokeAllJobs
     New-InvokeAllRunspacePool
+    
+About the Module:
+
+--> InvokeAll.dll is a Powershell module written in c#. It uses .Net Tasks and powershell’s Runspacepool feature to multithread and execute powershell commands or scripts.
+
+--> The module also supports executing commands asynchronously and the results can be collected at a later time. There are multiple switches on the cmdlet to control various features which makes its easier to customize according to each needs.
+
+--> For each input object from the pipeline, the module creates a powershell instance and submits it to the runspacepool aka job. (Mandatory to pass the Input as a pipeline object)
+
+--> Number of instances that are being Queued at a time is controlled by the batch size. The remaining instances from the pipeline are queued as a job in the batch completes. This is to reduce to memory footprint of the jobs while the command executes.
+
+--> Number of instances being actively processed is controlled by the Runspacepool and the Maxthreads parameter.
+
+--> The module creates a log file in %temp% directory for any troubleshooting.
+
  
 Examples:
         
@@ -29,7 +44,7 @@ This module also supports async way of running the commands as shown below:
 Also: Reusing the runspace on a script:
 ## Creating the runspace to reuse it.
 
-$runspace = New-InvokeAllRunspacePool -CommandName Get-MRSrequest -LoadAllTypeDatas
+    $runspace = New-InvokeAllRunspacePool -CommandName Get-MRSrequest -LoadAllTypeDatas
 
     $mailboxStats += $mbx | Invoke-All { Get-MailboxStatistics -Identity "$_.MailboxGuid" -IncludeSoftDeletedRecipients } `
         -ProgressBarStage "Collecting MailboxStat details for all Mailbox Locations"`
@@ -45,6 +60,8 @@ $runspace = New-InvokeAllRunspacePool -CommandName Get-MRSrequest -LoadAllTypeDa
         select @{Name = 'MailboxGuid';e={$_.PSJobName}},*;
 
 ## Removing the Runspace after use
-$runspace.close()
-$runspace.Dispose()
+       $runspace.close()
+       $runspace.Dispose()
 
+## Limitations:
+Because of the Runspacepool limitation, this module cannot support a script that will use Remote PS Session commands. In a runspacepool, we cannot create a Runspace that could load remote PS connection as well as local modules. 
