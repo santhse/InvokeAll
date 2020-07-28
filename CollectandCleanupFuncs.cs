@@ -42,13 +42,18 @@
 
             if (!isFromPipelineStoppedException && proxyFunctionInfo != null)
             {
+                LogHelper.Log(FileVerboseLogTypes, "Removing function", invokeAll, noFileLogging);
                 ScriptBlock.Create(@"Remove-Item Function:" + proxyFunctionInfo.Name).Invoke();
+                LogHelper.Log(FileVerboseLogTypes, "Remove function completed", invokeAll, noFileLogging);
             }
 
             if (!reuseRunspacePool && !isAsyncEnd && runspacePool != null)
             {
+                LogHelper.Log(FileVerboseLogTypes, "Closing Runspace", invokeAll, noFileLogging);
                 runspacePool.Close();
+                LogHelper.Log(FileVerboseLogTypes, "Disposing Runspace", invokeAll, noFileLogging);
                 runspacePool.Dispose();
+                LogHelper.Log(FileVerboseLogTypes, "Cleanup Done", invokeAll, noFileLogging);
             }
         }
 

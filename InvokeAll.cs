@@ -225,7 +225,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                 throw new Exception("Cmdlet will only accept input from Pipeline. Please see examples");
             }
 
-            LogHelper.LogProgress("Starting script", this, quiet: Quiet.IsPresent);
+            LogHelper.LogProgress("Starting script, Version V_1.2.4", this, quiet: Quiet.IsPresent);
 
             if (Async.IsPresent)
             {
