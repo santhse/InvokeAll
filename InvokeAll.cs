@@ -1,4 +1,10 @@
-﻿namespace PSParallel
+﻿// ---------------------------------------------------------------------------
+// <copyright file="InvokeAll.cs" company="Microsoft">
+//     Copyright (c) Microsoft Corporation.  All rights reserved.
+// </copyright>
+// ---------------------------------------------------------------------------
+
+namespace PSParallel
 {
     using System;
     using System.Collections;
@@ -145,7 +151,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
         [Parameter(Mandatory = false, ParameterSetName = ReUseRunspaceParameterSetName,
             HelpMessage = "Run New-InvokeAllRunspacepool and use the Output object on this parameter.")]
         public RunspacePool RunspaceToUse { get; set; }
-        
+
         /// <summary>
         /// Specifiy a meaning full message to show the progress, something like, "Collecting eventlogs from Servers"
         /// </summary>
@@ -225,7 +231,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                 throw new Exception("Cmdlet will only accept input from Pipeline. Please see examples");
             }
 
-            LogHelper.LogProgress("Starting script, Version V_1.2.4", this, quiet: Quiet.IsPresent);
+            LogHelper.LogProgress("Starting script", this, quiet: Quiet.IsPresent);
 
             if (Async.IsPresent)
             {
@@ -306,7 +312,7 @@ You cannot use alias or external scripts. If you are using a function from a cus
                         snapIns: PSSnapInsToLoad,
                         variableEntries: stateVariableEntries);
                 }
-                
+
                 LogHelper.LogDebug(debugStrings, this);
 
                 // for Logging Purposes, create a powershell instance and log the modules that are *actually* loaded on the runspace
@@ -433,6 +439,12 @@ You cannot use alias or external scripts. If you are using a function from a cus
                                 task: task,
                                 jobID: jobNum,
                                 ps: powerShell);
+
+                        // Populate the Job object with the Input Object
+                        if (ReturnasJobObject.IsPresent || Async.IsPresent)
+                        {
+                            job.InputPSObject = InputObject;
+                        }
 
                         if (!jobs.TryAdd(job.ID, job))
                         {
@@ -569,8 +581,9 @@ You cannot use alias or external scripts. If you are using a function from a cus
         /// <param name="task">Task ID from Powershell.BeginInvoke()</param>
         /// <param name="jobID">Job Number</param>
         /// <param name="ps">Powershell object for the job</param>
+        /// <param name="inputPSObject">Inputobject used on the job</param>
         /// <returns>New or existing Job</returns>
-        private Job CheckandCreateJob(string jobName, Task<PSDataCollection<PSObject>> task, int jobID, PowerShell ps)
+        private Job CheckandCreateJob(string jobName, Task<PSDataCollection<PSObject>> task, int jobID, PowerShell ps, PSObject inputPSObject = null)
         {
             lock (createJobLock)
             {
@@ -582,7 +595,8 @@ You cannot use alias or external scripts. If you are using a function from a cus
                         JobName = jobName,
                         JobTask = task,
                         PowerShell = ps,
-                        ID = jobID
+                        ID = jobID,
+                        InputPSObject = inputPSObject
                     };
                 }
 
@@ -617,6 +631,11 @@ You cannot use alias or external scripts. If you are using a function from a cus
             /// Job number / ID
             /// </summary>
             public int ID { get; set; }
+
+            /// <summary>
+            /// Input object that was passed, used when it is needed in the Output Job Object
+            /// </summary>
+            public PSObject InputPSObject { get; set; }
 
             /// <summary>
             /// Powershell object to run each job

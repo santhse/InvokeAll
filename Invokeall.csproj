@@ -7,9 +7,9 @@
     <ProjectGuid>{08FB4D44-1112-4AE7-BC7B-E9B1EB5C6606}</ProjectGuid>
     <OutputType>Library</OutputType>
     <AppDesignerFolder>Properties</AppDesignerFolder>
-    <RootNamespace>InvokeallCsWait</RootNamespace>
-    <AssemblyName>InvokeallCsWait</AssemblyName>
-    <TargetFrameworkVersion>v4.5.1</TargetFrameworkVersion>
+    <RootNamespace>Invokeall</RootNamespace>
+    <AssemblyName>Invokeall</AssemblyName>
+    <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
     <FileAlignment>512</FileAlignment>
     <Deterministic>true</Deterministic>
     <TargetFrameworkProfile />
